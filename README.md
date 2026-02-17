@@ -132,3 +132,4 @@ Le PDF généré est `rapport_pullman.pdf`.
 Le dossier `smart-room-ios` contient un `README.md` décrivant la structure recommandée de l'app iOS (SwiftUI + CoreBluetooth). La création et le lancement se font via Xcode directement sur ta machine.
 
 # smart-room-grms
+# smart-room-grms
