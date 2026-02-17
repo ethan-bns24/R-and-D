@@ -133,3 +133,4 @@ Le dossier `smart-room-ios` contient un `README.md` décrivant la structure reco
 
 # smart-room-grms
 # smart-room-grms
+# R-and-D
