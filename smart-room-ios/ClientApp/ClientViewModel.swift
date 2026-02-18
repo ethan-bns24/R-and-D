@@ -15,15 +15,27 @@ final class ClientViewModel: ObservableObject {
     @Published var password: String = ""
     @Published var isLoggingIn: Bool = false
     @Published var loginError: String = ""
+    @Published var isFetchingToken: Bool = false
 
     private let api = ApiClient()
     
     init() {
-        // Pour la démo, on force toujours la connexion au démarrage
-        // En production, décommenter la ligne suivante pour garder la session
-        // checkAuthStatus()
-        isAuthenticated = false
-        currentUser = nil
+        // Mode démo : on utilise le même token client hardcodé que le dashboard web
+        // (DEMO_CLIENT_TOKEN dans grms-web/src/App.jsx)
+        let demoToken = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoiN2ZjOTY3OTQtYTA4My00YWExLWI1YjktYzE4OWRjNmYzOTlmIiwiZW1haWwiOiIxQDIuZnIiLCJuYW1lIjoiSmVhbiBKZWFuIiwiZXhwIjo0ODY3MTIwMDAwLCJpYXQiOjE3Mzk4NDgwMDAsImlzcyI6ImdybXMifQ.OPJA1RvlYzm_EXVAqoZbL1x-mT4rhAkQrKx0nEjX1js"
+        let demoUser = User(
+            id: -1,
+            name: "Jean Jean (démo)",
+            email: "1@2.fr",
+            phone: nil,
+            status: nil
+        )
+        AuthService.shared.saveAuth(token: demoToken, user: demoUser)
+        isAuthenticated = true
+        currentUser = demoUser
+
+        // Optionnel : récupère automatiquement l'accès actif pour afficher la chambre + clé
+        Task { await self.fetchMyToken() }
     }
     
     func checkAuthStatus() {
@@ -61,6 +73,38 @@ final class ClientViewModel: ObservableObject {
         password = ""
         token = ""
         statusMessage = ""
+    }
+
+    func fetchMyToken() async {
+        guard isAuthenticated else { return }
+
+        isFetchingToken = true
+        defer { isFetchingToken = false }
+
+        do {
+            let grantsResponse = try await api.getMobileGrants()
+            guard let firstGrant = grantsResponse.grants.first else {
+                token = ""
+                roomId = ""
+                statusMessage = "Aucun accès actif. Fais un check-in pour ce client dans le dashboard."
+                return
+            }
+
+            // Chambre : room_number si dispo, sinon fallback sur ble_id de la 1ère porte
+            if let roomNumber = firstGrant.room_number, !roomNumber.trimmingCharacters(in: .whitespaces).isEmpty {
+                roomId = roomNumber
+            } else if let bleId = firstGrant.doors?.first?.ble_id, !bleId.trimmingCharacters(in: .whitespaces).isEmpty {
+                roomId = bleId
+            } else {
+                roomId = ""
+            }
+
+            // Clé active : on utilise grant_id (clé masquée dans l'UI)
+            token = firstGrant.grant_id
+            statusMessage = "Accès trouvé pour la chambre \(roomId). Clé active prête pour le BLE."
+        } catch {
+            statusMessage = "Erreur lors de la récupération des accès mobiles: \(error.localizedDescription)"
+        }
     }
 
     func verifyAccess() async {
