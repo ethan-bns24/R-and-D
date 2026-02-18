@@ -1,359 +1,390 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:4000';
 console.log('API_URL configurée:', API_URL);
 
-function App() {
-  const [rooms, setRooms] = useState([]);
-  const [logs, setLogs] = useState([]);
-  const [selectedClientIdForCheckin, setSelectedClientIdForCheckin] = useState('');
-  const [roomId, setRoomId] = useState(101);
-  const [lastToken, setLastToken] = useState('');
-  const [loadingCheckin, setLoadingCheckin] = useState(false);
-  const [simulatingAccess, setSimulatingAccess] = useState(false);
-  const [durationMinutes, setDurationMinutes] = useState(60);
-  const [loadingCheckout, setLoadingCheckout] = useState(false);
-  const [clients, setClients] = useState([]);
-  const [reservations, setReservations] = useState([]);
-  const [newClientName, setNewClientName] = useState('');
-  const [newClientEmail, setNewClientEmail] = useState('');
-  const [newClientPassword, setNewClientPassword] = useState('');
-  const [newResClientId, setNewResClientId] = useState('');
-  const [newResRoomId, setNewResRoomId] = useState(101);
-  const [newResStart, setNewResStart] = useState('');
-  const [newResEnd, setNewResEnd] = useState('');
-  const [creatingClient, setCreatingClient] = useState(false);
-  const [creatingReservation, setCreatingReservation] = useState(false);
-  const [phonesCount, setPhonesCount] = useState(1);
-  const [phoneStatuses, setPhoneStatuses] = useState({});
-  const [stats, setStats] = useState({ checkins: 0, authOk: 0, authFail: 0, intrusions: 0 });
-  const [selectedClientId, setSelectedClientId] = useState(null);
-  const [selectedClientDetails, setSelectedClientDetails] = useState(null);
-  const [editingClient, setEditingClient] = useState(null);
+// Token staff hardcodé pour la démo (valide 10 ans)
+const DEMO_STAFF_TOKEN = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdGFmZl9pZCI6ImE4YzQ4NmE1LTc3MDEtNDVjZS04YTRhLThlZjEzNjA2MDdhNiIsImVtYWlsIjoiYWRtaW5AZGVtby5sb2NhbCIsIm5hbWUiOiJBZG1pbiBEZW1vIiwicm9sZSI6ImFkbWluIiwiZXhwIjo0ODY3MTIwMDAwLCJpYXQiOjE3Mzk4NDgwMDAsImlzcyI6ImdybXMtc3RhZmYifQ.qaW9gmamDHVAQIjru75UZdRSYg9fBhabX-EwqCXpk2E';
 
+// Token client hardcodé pour la démo smartphone (valide 10 ans)
+// À remplacer par un vrai token généré via /v1/auth/login
+const DEMO_CLIENT_TOKEN = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoiN2ZjOTY3OTQtYTA4My00YWExLWI1YjktYzE4OWRjNmYzOTlmIiwiZW1haWwiOiIxQDIuZnIiLCJuYW1lIjoiSmVhbiBKZWFuIiwiZXhwIjo0ODY3MTIwMDAwLCJpYXQiOjE3Mzk4NDgwMDAsImlzcyI6ImdybXMifQ.OPJA1RvlYzm_EXVAqoZbL1x-mT4rhAkQrKx0nEjX1js';
+
+function App() {
+  // Room / Door state
+  const [rooms, setRooms] = useState([]);
+  const [doors, setDoors] = useState([]);
+  const [events, setEvents] = useState([]);
+  
+  // Guest user for assignment
+  const [clients, setClients] = useState([]);
+  const [selectedUserEmail, setSelectedUserEmail] = useState('');
+  const [selectedRoomNumber, setSelectedRoomNumber] = useState('101');
+  const [durationMinutes, setDurationMinutes] = useState(60);
+  const [loadingAssign, setLoadingAssign] = useState(false);
+  const [lastGrant, setLastGrant] = useState(null);
+
+  // Guest registration
+  const [newGuestName, setNewGuestName] = useState('');
+  const [newGuestEmail, setNewGuestEmail] = useState('');
+  const [newGuestPassword, setNewGuestPassword] = useState('');
+  const [creatingGuest, setCreatingGuest] = useState(false);
+
+  // Mobile simulation
+  const [phonesCount, setPhonesCount] = useState(1);
+  const [phoneTokens, setPhoneTokens] = useState({});
+  const [phoneStatuses, setPhoneStatuses] = useState({});
+  const [phoneLogins, setPhoneLogins] = useState({});
+
+  // Stats
+  const [stats, setStats] = useState({ grants: 0, accessOk: 0, accessFail: 0, locked: 0 });
+
+  // Helper to make authenticated requests
+  const apiFetch = useCallback(async (url, options = {}) => {
+    const headers = {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${DEMO_STAFF_TOKEN}`,
+      ...options.headers,
+    };
+    return fetch(url, { ...options, headers });
+  }, []);
+
+  // ============================================
+  // Data fetching
+  // ============================================
   const fetchRooms = async () => {
     try {
-      const res = await fetch(`${API_URL}/rooms`);
+      const res = await fetch(`${API_URL}/v1/rooms`);
       if (!res.ok) {
         console.error('Erreur fetchRooms:', res.status, res.statusText);
         return;
       }
       const data = await res.json();
       console.log('Chambres récupérées:', data);
-      setRooms(data);
+      setRooms(data || []);
     } catch (err) {
       console.error('Erreur de connexion fetchRooms:', err);
     }
   };
 
-  const fetchLogs = async () => {
-    const res = await fetch(`${API_URL}/logs`);
-    const data = await res.json();
-    setLogs(data.slice().reverse());
-
-    // recalcul des stats simples à partir des logs
-    let checkins = 0;
-    let authOk = 0;
-    let authFail = 0;
-    let intrusions = 0;
-    data.forEach((log) => {
-      switch (log.type) {
-        case 'CHECKIN':
-        case 'CHECKIN_FROM_RESERVATION':
-          checkins += 1;
-          break;
-        case 'AUTH_ATTEMPT':
-          if (log.success) authOk += 1;
-          else authFail += 1;
-          break;
-        case 'INTRUSION_LOCK':
-        case 'ROOM_UNLOCKED':
-          intrusions += 1;
-          break;
-        default:
-          break;
-      }
-    });
-    setStats({ checkins, authOk, authFail, intrusions });
-  };
-
-  const fetchClients = async () => {
-    const res = await fetch(`${API_URL}/clients`);
-    const data = await res.json();
-    setClients(data);
-  };
-
-  const fetchClientDetails = async (id) => {
+  const fetchDoors = useCallback(async () => {
     try {
-      const res = await fetch(`${API_URL}/clients/${id}`);
+      const res = await apiFetch(`${API_URL}/v1/backoffice/doors`);
       if (!res.ok) return;
       const data = await res.json();
-      setSelectedClientId(id);
-      setSelectedClientDetails(data);
-      setEditingClient({
-        name: data.client.name || '',
-        email: data.client.email || '',
-        phone: data.client.phone || '',
-        status: data.client.status || '',
+      setDoors(data || []);
+    } catch (err) {
+      console.error('Erreur fetchDoors:', err);
+    }
+  }, [apiFetch]);
+
+  const fetchEvents = useCallback(async () => {
+    try {
+      const res = await apiFetch(`${API_URL}/v1/backoffice/events`);
+      if (!res.ok) return;
+      const data = await res.json();
+      setEvents((data || []).slice().reverse());
+
+      // Recalcul des stats
+      let accessOk = 0;
+      let accessFail = 0;
+      let locked = 0;
+      (data || []).forEach((ev) => {
+        if (ev.result === 'success') accessOk += 1;
+        else if (ev.result === 'denied' || ev.result === 'expired') accessFail += 1;
+        if (ev.result === 'locked') locked += 1;
       });
-    } catch {
-      // ignore for l'instant
+      setStats((s) => ({ ...s, accessOk, accessFail, locked }));
+    } catch (err) {
+      console.error('Erreur fetchEvents:', err);
+    }
+  }, [apiFetch]);
+
+  const fetchClients = async () => {
+    try {
+      // Use legacy endpoint for clients list
+      const res = await fetch(`${API_URL}/clients`);
+      if (!res.ok) return;
+      const data = await res.json();
+      setClients(data || []);
+    } catch (err) {
+      console.error('Erreur fetchClients:', err);
     }
   };
 
-  const fetchReservations = async () => {
-    const res = await fetch(`${API_URL}/reservations`);
-    const data = await res.json();
-    setReservations(data.slice().reverse());
-  };
-
+  // Initial fetch and polling
   useEffect(() => {
     fetchRooms();
-    fetchLogs();
     fetchClients();
-    fetchReservations();
     const id = setInterval(() => {
       fetchRooms();
-      fetchLogs();
       fetchClients();
-      fetchReservations();
-    }, 5000);
+    }, 10000);
     return () => clearInterval(id);
   }, []);
 
-  // Pré-remplir les dates de réservation (maintenant et +1h) pour simplifier la saisie
+  // Fetch doors and events
   useEffect(() => {
-    const formatLocal = (d) => d.toISOString().slice(0, 16);
-    if (!newResStart || !newResEnd) {
-      const now = new Date();
-      const inOneHour = new Date(now.getTime() + 60 * 60 * 1000);
-      if (!newResStart) setNewResStart(formatLocal(now));
-      if (!newResEnd) setNewResEnd(formatLocal(inOneHour));
-    }
-  }, [newResStart, newResEnd]);
+    fetchDoors();
+    fetchEvents();
+    const id = setInterval(() => {
+      fetchDoors();
+      fetchEvents();
+    }, 5000);
+    return () => clearInterval(id);
+  }, [fetchDoors, fetchEvents]);
 
-  const handleCheckin = async (e) => {
+  // ============================================
+  // Actions
+  // ============================================
+
+  // Assign access (check-in)
+  const handleAssign = async (e) => {
     e.preventDefault();
-    if (!selectedClientIdForCheckin) {
+    if (!selectedUserEmail) {
       alert('Veuillez sélectionner un client');
       return;
     }
     try {
-      setLoadingCheckin(true);
-      const now = Date.now();
-      const validFrom = new Date(now).toISOString();
-      const validTo = new Date(now + Number(durationMinutes || 0) * 60 * 1000).toISOString();
+      setLoadingAssign(true);
+      const now = Math.floor(Date.now() / 1000);
+      const fromTs = now;
+      const toTs = now + Number(durationMinutes || 60) * 60;
 
-      const res = await fetch(`${API_URL}/checkin`, {
+      const res = await apiFetch(`${API_URL}/v1/backoffice/assign`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          clientId: Number(selectedClientIdForCheckin),
-          roomId: Number(roomId),
-          validFrom,
-          validTo,
+          user_email: selectedUserEmail,
+          room_number: String(selectedRoomNumber),
+          from_ts: fromTs,
+          to_ts: toTs,
         }),
       });
       const data = await res.json();
-      if (data.token) {
-        setLastToken(data.token);
-        await fetchRooms();
-        await fetchLogs();
-      } else {
-        alert('Erreur de check-in');
+      if (!res.ok) {
+        alert(`Erreur: ${data.error || 'Échec de l\'assignation'}`);
+        return;
       }
-    } catch (err) {
+      setLastGrant(data);
+      setStats((s) => ({ ...s, grants: s.grants + 1 }));
+      await fetchDoors();
+      await fetchEvents();
+      await fetchRooms();
+    } catch {
       alert("Erreur de connexion à l'API GRMS");
     } finally {
-      setLoadingCheckin(false);
+      setLoadingAssign(false);
     }
   };
 
-  const simulateAccess = async () => {
-    if (!lastToken) {
-      alert('Aucun token généré pour le moment.');
+  // Revoke access (check-out)
+  const handleRevoke = async () => {
+    if (!lastGrant?.grant_id) {
+      alert('Aucun accès à révoquer');
       return;
     }
     try {
-      setSimulatingAccess(true);
-      const res = await fetch(`${API_URL}/tokens/verify`, {
+      const res = await apiFetch(`${API_URL}/v1/backoffice/revoke`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tokenValue: lastToken, roomId: Number(roomId) }),
+        body: JSON.stringify({ grant_id: lastGrant.grant_id }),
       });
       const data = await res.json();
-      if (!data.ok) {
-        alert(
-          `Accès refusé (${data.reason || 'erreur'}). Consulte les logs pour le détail.`,
-        );
+      if (!res.ok) {
+        alert(`Erreur: ${data.error || 'Échec de la révocation'}`);
+        return;
       }
-      await fetchLogs();
-    } catch (e) {
-      alert("Erreur de connexion à l'API GRMS lors de la simulation d'accès.");
-    } finally {
-      setSimulatingAccess(false);
-    }
-  };
-
-  const handlePhoneAccess = async (idx) => {
-    if (!lastToken) {
-      setPhoneStatuses((prev) => ({
-        ...prev,
-        [idx]: "Aucune clé disponible. Génère d'abord un token côté accueil.",
-      }));
-      return;
-    }
-    try {
-      const res = await fetch(`${API_URL}/tokens/verify`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tokenValue: lastToken, roomId: Number(roomId) }),
-      });
-      const data = await res.json();
-      if (data.ok) {
-        setPhoneStatuses((prev) => ({
-          ...prev,
-          [idx]: 'Accès autorisé – porte ouverte (simulation).',
-        }));
-      } else {
-        setPhoneStatuses((prev) => ({
-          ...prev,
-          [idx]: `Accès refusé (${data.reason || 'erreur'}).`,
-        }));
-      }
-      await fetchLogs();
+      setLastGrant(null);
+      await fetchDoors();
+      await fetchEvents();
+      await fetchRooms();
     } catch {
-      setPhoneStatuses((prev) => ({
-        ...prev,
-        [idx]: "Impossible de joindre le GRMS depuis le smartphone.",
-      }));
+      alert("Erreur de connexion à l'API GRMS");
     }
   };
 
-  const handleCheckout = async () => {
+  // Unlock door
+  const handleUnlockDoor = async (doorId) => {
     try {
-      setLoadingCheckout(true);
-      const res = await fetch(`${API_URL}/checkout`, {
+      const res = await apiFetch(`${API_URL}/v1/backoffice/doors/unlock`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ roomId: Number(roomId) }),
+        body: JSON.stringify({ door_id: doorId }),
       });
-      const data = await res.json();
-      if (!data.ok) {
-        alert("Échec de la libération de la chambre.");
-      } else {
-        setLastToken('');
-        await fetchRooms();
-        await fetchLogs();
+      if (!res.ok) {
+        alert('Échec du déverrouillage');
+        return;
       }
-    } catch (e) {
-      alert("Erreur de connexion à l'API GRMS lors du checkout.");
-    } finally {
-      setLoadingCheckout(false);
+      await fetchDoors();
+      await fetchEvents();
+    } catch {
+      alert("Erreur lors du déverrouillage");
     }
   };
 
-  const handleCreateClient = async (e) => {
+  // Create guest account
+  const handleCreateGuest = async (e) => {
     e.preventDefault();
-    if (!newClientName.trim()) return;
+    if (!newGuestName.trim() || !newGuestEmail.trim() || !newGuestPassword.trim()) {
+      alert('Nom, email et mot de passe sont requis');
+      return;
+    }
     try {
-      setCreatingClient(true);
-      const email = newClientEmail.trim();
-      let passwordToSend = newClientPassword;
-
-      // Si l'email est renseigné, il faut un mot de passe pour pouvoir se connecter sur l'app iOS.
-      // Pour la démo, si aucun mot de passe n'est fourni, on en génère un et on l'affiche une seule fois.
-      if (email && !passwordToSend) {
-        passwordToSend = `demo-${Math.random().toString(36).slice(2, 10)}`;
-      }
-
-      const res = await fetch(`${API_URL}/clients`, {
+      setCreatingGuest(true);
+      const res = await fetch(`${API_URL}/v1/auth/signup`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          name: newClientName.trim(),
-          email: email || undefined,
-          password: email ? passwordToSend : undefined,
+          name: newGuestName.trim(),
+          email: newGuestEmail.trim(),
+          password: newGuestPassword,
         }),
       });
       const data = await res.json();
-
-      if (email) {
-        alert(
-          `Client créé.\n\nIdentifiants iOS:\n- email: ${email}\n- mot de passe: ${passwordToSend}\n\nNote: conserve-le, il ne sera plus affiché.`,
-        );
-      } else if (newClientPassword) {
-        alert("Tu as saisi un mot de passe, mais sans email il ne servira pas à la connexion iOS.");
+      if (!res.ok) {
+        alert(`Erreur: ${data.error || 'Échec de la création'}`);
+        return;
       }
-
-      setNewClientName('');
-      setNewClientEmail('');
-      setNewClientPassword('');
+      alert(`Client créé avec succès!\n\nIdentifiants iOS:\n- email: ${newGuestEmail}\n- mot de passe: ${newGuestPassword}`);
+      setNewGuestName('');
+      setNewGuestEmail('');
+      setNewGuestPassword('');
       await fetchClients();
-      setNewResClientId(String(data.id));
-      fetchClientDetails(data.id);
+      setSelectedUserEmail(newGuestEmail.trim());
     } catch {
-      alert("Erreur lors de la création du client.");
+      alert("Erreur lors de la création du client");
     } finally {
-      setCreatingClient(false);
+      setCreatingGuest(false);
     }
   };
 
-  const handleCreateReservation = async (e) => {
-    e.preventDefault();
-    if (!newResClientId || !newResRoomId || !newResStart || !newResEnd) {
-      alert('Merci de remplir tous les champs de réservation.');
+  // Phone simulation - use hardcoded demo token or login
+  const handlePhoneLogin = async (idx) => {
+    // Mode démo : utiliser le token client hardcodé
+    if (DEMO_CLIENT_TOKEN && DEMO_CLIENT_TOKEN !== 'PLACEHOLDER') {
+      setPhoneTokens((prev) => ({ ...prev, [idx]: DEMO_CLIENT_TOKEN }));
+      setPhoneStatuses((prev) => ({ ...prev, [idx]: '✓ Connecté (mode démo)' }));
+      
+      // Fetch grants avec le token démo
+      try {
+        const grantsRes = await fetch(`${API_URL}/v1/mobile/grants`, {
+          headers: { Authorization: `Bearer ${DEMO_CLIENT_TOKEN}` },
+        });
+        const grantsData = await grantsRes.json();
+        if (grantsRes.ok && grantsData?.grants?.length > 0) {
+          setPhoneStatuses((prev) => ({
+            ...prev,
+            [idx]: `✓ Connecté - ${grantsData.grants.length} accès disponible(s)`,
+          }));
+        } else {
+          setPhoneStatuses((prev) => ({ ...prev, [idx]: '✓ Connecté (aucun accès assigné)' }));
+        }
+      } catch {
+        setPhoneStatuses((prev) => ({ ...prev, [idx]: '✓ Connecté (mode démo)' }));
+      }
       return;
     }
-    try {
-      setCreatingReservation(true);
-      const res = await fetch(`${API_URL}/reservations`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          clientId: Number(newResClientId),
-          roomId: Number(newResRoomId),
-          startDate: newResStart,
-          endDate: newResEnd,
-        }),
-      });
-      await res.json();
-      await fetchReservations();
-    } catch {
-      alert("Erreur lors de la création de la réservation.");
-    } finally {
-      setCreatingReservation(false);
-    }
-  };
 
-  const handleCheckinFromLastReservation = async () => {
-    if (reservations.length === 0) {
-      alert('Aucune réservation disponible.');
+    // Mode normal : login avec email/password
+    const loginData = phoneLogins[idx];
+    if (!loginData?.email || !loginData?.password) {
+      setPhoneStatuses((prev) => ({ ...prev, [idx]: 'Renseigne email et mot de passe' }));
       return;
     }
-    const lastRes = reservations[0];
     try {
-      setLoadingCheckin(true);
-      const res = await fetch(`${API_URL}/reservations/${lastRes.id}/checkin`, {
+      const res = await fetch(`${API_URL}/v1/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: loginData.email, password: loginData.password }),
       });
       const data = await res.json();
-      if (data.token) {
-        setLastToken(data.token);
-        setRoomId(lastRes.roomId);
-        await fetchRooms();
-        await fetchLogs();
+      if (!res.ok) {
+        setPhoneStatuses((prev) => ({ ...prev, [idx]: `Connexion échouée: ${data.error || 'erreur'}` }));
+        return;
+      }
+      setPhoneTokens((prev) => ({ ...prev, [idx]: data.token }));
+      setPhoneStatuses((prev) => ({ ...prev, [idx]: 'Connecté! Récupération des accès...' }));
+      // Fetch grants
+      const grantsRes = await fetch(`${API_URL}/v1/mobile/grants`, {
+        headers: { Authorization: `Bearer ${data.token}` },
+      });
+      const grantsData = await grantsRes.json();
+      if (grantsRes.ok && grantsData?.grants?.length > 0) {
+        setPhoneStatuses((prev) => ({
+          ...prev,
+          [idx]: `${grantsData.grants.length} accès trouvé(s). Prêt à ouvrir!`,
+        }));
       } else {
-        alert("Échec du check-in à partir de la réservation.");
+        setPhoneStatuses((prev) => ({ ...prev, [idx]: 'Connecté mais aucun accès assigné.' }));
       }
     } catch {
-      alert("Erreur de connexion à l'API GRMS lors du check-in réservation.");
-    } finally {
-      setLoadingCheckin(false);
+      setPhoneStatuses((prev) => ({ ...prev, [idx]: 'Impossible de joindre le serveur' }));
     }
   };
 
+  // Phone simulation - simulate BLE access
+  const handlePhoneAccess = async (idx) => {
+    const token = phoneTokens[idx];
+    if (!token) {
+      setPhoneStatuses((prev) => ({ ...prev, [idx]: 'Connecte-toi d\'abord!' }));
+      return;
+    }
+    try {
+      const grantsRes = await fetch(`${API_URL}/v1/mobile/grants`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const grantsData = await grantsRes.json();
+      console.log('Grants pour téléphone', idx, grantsData);
+      if (!grantsRes.ok || !grantsData?.grants?.length) {
+        setPhoneStatuses((prev) => ({ ...prev, [idx]: 'Aucun accès valide trouvé.' }));
+        return;
+      }
+
+      // Record access event for each grant (simulate BLE door unlock)
+      const grant = grantsData.grants[0]; // Use first active grant
+      
+      // Get door_id from the doors array inside the grant
+      if (!grant.doors || grant.doors.length === 0) {
+        setPhoneStatuses((prev) => ({ ...prev, [idx]: 'Aucune porte associée à cet accès.' }));
+        return;
+      }
+      
+      const door = grant.doors[0]; // Use first door
+      const accessRes = await fetch(`${API_URL}/v1/mobile/access`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          grant_id: grant.grant_id,
+          door_id: door.door_id,
+          result: 'success',
+        }),
+      });
+
+      if (accessRes.ok) {
+        setPhoneStatuses((prev) => ({
+          ...prev,
+          [idx]: `🔓 Porte ${door.ble_id} ouverte! Accès enregistré.`,
+        }));
+      } else {
+        const errData = await accessRes.json().catch(() => ({}));
+        setPhoneStatuses((prev) => ({
+          ...prev,
+          [idx]: `Erreur: ${errData.error || 'échec enregistrement'}`,
+        }));
+      }
+
+      await fetchEvents();
+    } catch {
+      setPhoneStatuses((prev) => ({ ...prev, [idx]: 'Erreur de communication BLE simulée' }));
+    }
+  };
+
+  // ============================================
+  // RENDER
+  // ============================================
+
+  // Main dashboard
   return (
     <div
       style={{
@@ -366,7 +397,7 @@ function App() {
       <div
         style={{
           width: '100%',
-          maxWidth: 1100,
+          maxWidth: 1200,
           background: 'linear-gradient(135deg, rgba(15,23,42,0.96), rgba(15,23,42,0.98))',
           borderRadius: '1.75rem',
           padding: '2.25rem 2.5rem',
@@ -375,6 +406,7 @@ function App() {
           color: '#e5e7eb',
         }}
       >
+        {/* Header */}
         <header
           style={{
             display: 'flex',
@@ -399,8 +431,7 @@ function App() {
             </p>
             <h1 style={{ margin: 0 }}>GRMS · Smart Room Dashboard</h1>
             <p style={{ marginTop: '0.35rem', color: '#9ca3af', maxWidth: 520 }}>
-              Simulateur d'accueil hôtel & chambre intelligente : check-in, génération de token
-              sécurisé et suivi des tentatives d'accès.
+              Gestion des accès chambres, assignation des clés numériques et suivi des événements d'accès.
             </p>
           </div>
           <div
@@ -414,10 +445,42 @@ function App() {
             }}
           >
             <span style={{ display: 'block', fontWeight: 500, color: '#e5e7eb' }}>Mode démo</span>
-            <span>Flux local GRMS ↔ chambre ↔ smartphone</span>
+            <span>Backoffice GRMS</span>
           </div>
         </header>
 
+        {/* Stats bar */}
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(4, 1fr)',
+            gap: '1rem',
+            marginBottom: '1.5rem',
+          }}
+        >
+          {[
+            { label: 'Accès assignés', value: stats.grants, color: '#38bdf8' },
+            { label: 'Accès réussis', value: stats.accessOk, color: '#22c55e' },
+            { label: 'Accès refusés', value: stats.accessFail, color: '#f97316' },
+            { label: 'Portes verrouillées', value: stats.locked, color: '#ef4444' },
+          ].map((s) => (
+            <div
+              key={s.label}
+              style={{
+                padding: '1rem',
+                borderRadius: '1rem',
+                background: 'rgba(15,23,42,0.8)',
+                border: '1px solid rgba(55,65,81,0.8)',
+                textAlign: 'center',
+              }}
+            >
+              <div style={{ fontSize: '1.5rem', fontWeight: 700, color: s.color }}>{s.value}</div>
+              <div style={{ fontSize: '0.75rem', color: '#9ca3af' }}>{s.label}</div>
+            </div>
+          ))}
+        </div>
+
+        {/* Main content */}
         <main
           style={{
             display: 'grid',
@@ -425,116 +488,345 @@ function App() {
             gap: '1.75rem',
           }}
         >
-          <section
-            style={{
-              background: 'radial-gradient(circle at top left, #0b1120, #020617)',
-              borderRadius: '1.5rem',
-              padding: '1.5rem 1.75rem',
-              border: '1px solid rgba(55,65,81,0.8)',
-            }}
-          >
-            <h2 style={{ marginTop: 0, marginBottom: '1rem', color: '#9ca3af' }}>Check-in client</h2>
-            <form
-              onSubmit={handleCheckin}
+          {/* Left column */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+            {/* Assign access (check-in) */}
+            <section
               style={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
-                gap: '1rem 1.4rem',
-                alignItems: 'end',
+                background: 'radial-gradient(circle at top left, #0b1120, #020617)',
+                borderRadius: '1.5rem',
+                padding: '1.5rem 1.75rem',
+                border: '1px solid rgba(55,65,81,0.8)',
               }}
             >
-              <div>
-                <label style={{ fontSize: '0.8rem', color: '#9ca3af' }}>
-                  Client
-                  <select
-                    style={{ marginTop: '0.35rem', width: '100%', padding: '0.5rem', borderRadius: '0.5rem', backgroundColor: '#1f2937', color: '#e5e7eb', border: '1px solid #374151' }}
-                    value={selectedClientIdForCheckin}
-                    onChange={(e) => setSelectedClientIdForCheckin(e.target.value)}
-                  >
-                    <option value="">-- Sélectionner un client --</option>
-                    {clients.map((c) => (
-                      <option key={c.id} value={c.id}>
-                        {c.name} {c.email ? `(${c.email})` : ''}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              </div>
-              <div>
-                <label style={{ fontSize: '0.8rem', color: '#9ca3af' }}>
-                  Room ID
-                  <input
-                    type="number"
-                    style={{ marginTop: '0.35rem', width: '100%' }}
-                    value={roomId}
-                    onChange={(e) => setRoomId(e.target.value)}
-                  />
-                </label>
-              </div>
-              <div>
-                <label style={{ fontSize: '0.8rem', color: '#9ca3af' }}>
-                  Durée de validité (min)
-                  <input
-                    type="number"
-                    min="1"
-                    style={{ marginTop: '0.35rem', width: '100%' }}
-                    value={durationMinutes}
-                    onChange={(e) => setDurationMinutes(e.target.value)}
-                  />
-                </label>
-              </div>
-              <div style={{ display: 'flex', gap: '0.6rem', justifyContent: 'flex-start' }}>
-                <button type="submit" disabled={loadingCheckin}>
-                  {loadingCheckin ? 'Génération…' : 'Générer le token sécurisé'}
-                </button>
-                <button
-                  type="button"
-                  onClick={handleCheckout}
-                  disabled={loadingCheckout}
-                >
-                  {loadingCheckout ? 'Libération…' : 'Libérer la chambre'}
-                </button>
-              </div>
-            </form>
-
-            {lastToken && (
-              <div
+              <h2 style={{ marginTop: 0, marginBottom: '1rem', color: '#9ca3af' }}>
+                Assigner un accès (Check-in)
+              </h2>
+              <form
+                onSubmit={handleAssign}
                 style={{
-                  marginTop: '1.4rem',
-                  padding: '0.95rem 1.05rem',
-                  borderRadius: '1rem',
-                  background:
-                    'linear-gradient(120deg, rgba(8,47,73,0.95), rgba(8,47,73,0.7), rgba(30,64,175,0.7))',
-                  border: '1px solid rgba(56,189,248,0.65)',
-                  fontSize: '0.9rem',
-                  wordBreak: 'break-all',
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+                  gap: '1rem 1.4rem',
+                  alignItems: 'end',
                 }}
               >
-                <div style={{ fontSize: '0.75rem', letterSpacing: '0.16em', textTransform: 'uppercase' }}>
-                  Dernier token généré
+                <div>
+                  <label style={{ fontSize: '0.8rem', color: '#9ca3af' }}>
+                    Client (email)
+                    <select
+                      style={{
+                        marginTop: '0.35rem',
+                        width: '100%',
+                        padding: '0.5rem',
+                        borderRadius: '0.5rem',
+                        backgroundColor: '#1f2937',
+                        color: '#e5e7eb',
+                        border: '1px solid #374151',
+                      }}
+                      value={selectedUserEmail}
+                      onChange={(e) => setSelectedUserEmail(e.target.value)}
+                    >
+                      <option value="">-- Sélectionner un client --</option>
+                      {clients.map((c) => (
+                        <option key={c.id || c.email} value={c.email}>
+                          {c.name} ({c.email})
+                        </option>
+                      ))}
+                    </select>
+                  </label>
                 </div>
-                <div style={{ marginTop: '0.3rem', fontFamily: 'SF Mono, Menlo, ui-monospace', fontSize: '0.88rem' }}>
-                  {lastToken}
+                <div>
+                  <label style={{ fontSize: '0.8rem', color: '#9ca3af' }}>
+                    N° Chambre
+                    <input
+                      type="text"
+                      style={{ marginTop: '0.35rem', width: '100%' }}
+                      value={selectedRoomNumber}
+                      onChange={(e) => setSelectedRoomNumber(e.target.value)}
+                      placeholder="101"
+                    />
+                  </label>
                 </div>
-                <p style={{ margin: '0.5rem 0 0', fontSize: '0.78rem', color: '#bfdbfe' }}>
-                  Utilise ce token dans le simulateur de chambre pour vérifier l'ouverture automatique.
-                </p>
-              </div>
-            )}
-          </section>
+                <div>
+                  <label style={{ fontSize: '0.8rem', color: '#9ca3af' }}>
+                    Durée (min)
+                    <input
+                      type="number"
+                      min="1"
+                      style={{ marginTop: '0.35rem', width: '100%' }}
+                      value={durationMinutes}
+                      onChange={(e) => setDurationMinutes(e.target.value)}
+                    />
+                  </label>
+                </div>
+                <div style={{ display: 'flex', gap: '0.6rem', justifyContent: 'flex-start' }}>
+                  <button type="submit" disabled={loadingAssign}>
+                    {loadingAssign ? 'Assignation…' : 'Assigner l\'accès'}
+                  </button>
+                  <button type="button" onClick={handleRevoke} disabled={!lastGrant}>
+                    Révoquer
+                  </button>
+                </div>
+              </form>
 
-          <section
-            style={{
-              display: 'flex',
-              flexDirection: 'column',
-              gap: '1.25rem',
-            }}
-          >
-            <div
+              {lastGrant && (
+                <div
+                  style={{
+                    marginTop: '1.4rem',
+                    padding: '0.95rem 1.05rem',
+                    borderRadius: '1rem',
+                    background:
+                      'linear-gradient(120deg, rgba(8,47,73,0.95), rgba(8,47,73,0.7), rgba(30,64,175,0.7))',
+                    border: '1px solid rgba(56,189,248,0.65)',
+                    fontSize: '0.9rem',
+                  }}
+                >
+                  <div
+                    style={{
+                      fontSize: '0.75rem',
+                      letterSpacing: '0.16em',
+                      textTransform: 'uppercase',
+                    }}
+                  >
+                    Dernier accès assigné
+                  </div>
+                  <div style={{ marginTop: '0.3rem', fontSize: '0.85rem' }}>
+                    <strong>Grant ID:</strong>{' '}
+                    <span style={{ fontFamily: 'SF Mono, Menlo, ui-monospace', fontSize: '0.78rem' }}>
+                      {lastGrant.grant_id}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: '0.8rem', color: '#bfdbfe', marginTop: '0.3rem' }}>
+                    Valide de {new Date(lastGrant.from_ts * 1000).toLocaleString()} à{' '}
+                    {new Date(lastGrant.to_ts * 1000).toLocaleString()}
+                  </div>
+                </div>
+              )}
+            </section>
+
+            {/* Create guest */}
+            <section
               style={{
                 background: 'radial-gradient(circle at top, #020617, #020617)',
                 borderRadius: '1.5rem',
-                padding: '1.25rem 1.5rem 1.9rem',
+                padding: '1.25rem 1.5rem',
+                border: '1px solid rgba(55,65,81,0.8)',
+              }}
+            >
+              <h2 style={{ margin: 0, marginBottom: '1rem', color: '#9ca3af' }}>
+                Créer un compte client
+              </h2>
+              <form
+                onSubmit={handleCreateGuest}
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
+                  gap: '0.75rem',
+                  alignItems: 'end',
+                }}
+              >
+                <input
+                  placeholder="Nom"
+                  value={newGuestName}
+                  onChange={(e) => setNewGuestName(e.target.value)}
+                />
+                <input
+                  type="email"
+                  placeholder="Email"
+                  value={newGuestEmail}
+                  onChange={(e) => setNewGuestEmail(e.target.value)}
+                />
+                <input
+                  type="password"
+                  placeholder="Mot de passe"
+                  value={newGuestPassword}
+                  onChange={(e) => setNewGuestPassword(e.target.value)}
+                />
+                <button type="submit" disabled={creatingGuest}>
+                  {creatingGuest ? 'Création…' : 'Créer'}
+                </button>
+              </form>
+              <p style={{ marginTop: '0.75rem', fontSize: '0.75rem', color: '#6b7280' }}>
+                Le client pourra se connecter via l'app iOS avec ces identifiants.
+              </p>
+            </section>
+
+            {/* Phone simulation */}
+            <section
+              style={{
+                background: 'radial-gradient(circle at top, #020617, #020617)',
+                borderRadius: '1.5rem',
+                padding: '1.25rem 1.5rem',
+                border: '1px solid rgba(55,65,81,0.8)',
+              }}
+            >
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  marginBottom: '1rem',
+                }}
+              >
+                <h2 style={{ margin: 0, color: '#9ca3af' }}>Simulation smartphone client</h2>
+                <select
+                  value={phonesCount}
+                  onChange={(e) => setPhonesCount(Number(e.target.value))}
+                  style={{
+                    borderRadius: '999px',
+                    padding: '0.3rem 0.8rem',
+                    fontSize: '0.8rem',
+                  }}
+                >
+                  <option value={1}>1 téléphone</option>
+                  <option value={2}>2 téléphones</option>
+                  <option value={3}>3 téléphones</option>
+                </select>
+              </div>
+
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: `repeat(${phonesCount}, minmax(0, 1fr))`,
+                  gap: '1rem',
+                }}
+              >
+                {Array.from({ length: phonesCount }).map((_, idx) => (
+                  <div
+                    key={idx}
+                    style={{
+                      borderRadius: '1.5rem',
+                      padding: '1rem',
+                      background: 'rgba(15,23,42,0.9)',
+                      border: '1px solid rgba(55,65,81,0.9)',
+                    }}
+                  >
+                    <div
+                      style={{
+                        width: 60,
+                        height: 4,
+                        borderRadius: 999,
+                        backgroundColor: '#4b5563',
+                        margin: '0 auto 0.8rem',
+                      }}
+                    />
+                    <div
+                      style={{
+                        fontSize: '0.78rem',
+                        color: '#9ca3af',
+                        marginBottom: '0.5rem',
+                        textAlign: 'center',
+                      }}
+                    >
+                      Smartphone {idx + 1}
+                    </div>
+
+                    {!phoneTokens[idx] ? (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                        <input
+                          placeholder="Email client"
+                          value={phoneLogins[idx]?.email || ''}
+                          onChange={(e) =>
+                            setPhoneLogins((prev) => ({
+                              ...prev,
+                              [idx]: { ...prev[idx], email: e.target.value },
+                            }))
+                          }
+                          style={{ fontSize: '0.8rem' }}
+                        />
+                        <input
+                          type="password"
+                          placeholder="Mot de passe"
+                          value={phoneLogins[idx]?.password || ''}
+                          onChange={(e) =>
+                            setPhoneLogins((prev) => ({
+                              ...prev,
+                              [idx]: { ...prev[idx], password: e.target.value },
+                            }))
+                          }
+                          style={{ fontSize: '0.8rem' }}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => handlePhoneLogin(idx)}
+                          style={{ fontSize: '0.8rem' }}
+                        >
+                          Se connecter
+                        </button>
+                      </div>
+                    ) : (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                        <div
+                          style={{
+                            fontSize: '0.75rem',
+                            color: '#22c55e',
+                            textAlign: 'center',
+                          }}
+                        >
+                          ✓ Connecté
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handlePhoneAccess(idx)}
+                          style={{ fontSize: '0.8rem' }}
+                        >
+                          Ouvrir la porte (BLE)
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setPhoneTokens((prev) => {
+                              const n = { ...prev };
+                              delete n[idx];
+                              return n;
+                            });
+                            setPhoneStatuses((prev) => {
+                              const n = { ...prev };
+                              delete n[idx];
+                              return n;
+                            });
+                          }}
+                          style={{
+                            fontSize: '0.75rem',
+                            background: 'transparent',
+                            border: '1px solid rgba(248,113,113,0.5)',
+                            color: '#fca5a5',
+                          }}
+                        >
+                          Déconnexion
+                        </button>
+                      </div>
+                    )}
+
+                    {phoneStatuses[idx] && (
+                      <p
+                        style={{
+                          marginTop: '0.6rem',
+                          fontSize: '0.75rem',
+                          textAlign: 'center',
+                          color: phoneStatuses[idx].includes('autorisé') || phoneStatuses[idx].includes('Connecté')
+                            ? '#6ee7b7'
+                            : '#fca5a5',
+                        }}
+                      >
+                        {phoneStatuses[idx]}
+                      </p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </section>
+          </div>
+
+          {/* Right column */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+            {/* Rooms */}
+            <section
+              style={{
+                background: 'radial-gradient(circle at top, #020617, #020617)',
+                borderRadius: '1.5rem',
+                padding: '1.25rem 1.5rem',
                 border: '1px solid rgba(55,65,81,0.8)',
               }}
             >
@@ -543,55 +835,47 @@ function App() {
                   display: 'flex',
                   justifyContent: 'space-between',
                   alignItems: 'center',
-                  marginBottom: '0.4rem',
+                  marginBottom: '0.75rem',
                 }}
               >
                 <h2 style={{ margin: 0, color: '#9ca3af' }}>Chambres</h2>
-                <div style={{ display: 'flex', gap: '0.4rem' }}>
-                  <button onClick={fetchRooms} style={{ paddingInline: '1rem', fontSize: '0.8rem' }}>
-                    Rafraîchir
-                  </button>
-                  <button
-                    type="button"
-                    onClick={simulateAccess}
-                    disabled={simulatingAccess}
-                    style={{ paddingInline: '1rem', fontSize: '0.8rem' }}
-                  >
-                    {simulatingAccess ? 'Simulation…' : 'Simuler un accès client'}
-                  </button>
-                </div>
+                <button
+                  onClick={fetchRooms}
+                  style={{ paddingInline: '1rem', fontSize: '0.8rem' }}
+                >
+                  Rafraîchir
+                </button>
               </div>
-              <p style={{ marginTop: 0, marginBottom: '0.75rem', fontSize: '0.8rem', color: '#6b7280' }}>
-                Statut temps réel des chambres simulées.
-              </p>
               <div
                 style={{
                   display: 'grid',
-                  gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))',
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))',
                   gap: '0.75rem',
                 }}
               >
                 {rooms.map((r) => (
                   <div
-                    key={r.id}
+                    key={r.room_id || r.id}
                     style={{
                       borderRadius: '1rem',
-                      padding: '0.8rem 0.9rem',
+                      padding: '0.8rem',
                       background: 'rgba(15,23,42,0.9)',
                       border: '1px solid rgba(75,85,99,0.9)',
                     }}
                   >
-                    <div style={{ fontSize: '0.8rem', color: '#6b7280' }}>Chambre</div>
-                    <div style={{ fontSize: '1.2rem', fontWeight: 600 }}>#{r.id}</div>
+                    <div style={{ fontSize: '0.75rem', color: '#6b7280' }}>Chambre</div>
+                    <div style={{ fontSize: '1.1rem', fontWeight: 600 }}>
+                      {r.room_number || `#${r.id}`}
+                    </div>
                     <div
                       style={{
                         marginTop: '0.35rem',
-                        fontSize: '0.78rem',
+                        fontSize: '0.72rem',
                         padding: '0.15rem 0.5rem',
                         borderRadius: '999px',
                         display: 'inline-flex',
                         alignItems: 'center',
-                        gap: '0.35rem',
+                        gap: '0.3rem',
                         background:
                           r.status === 'locked'
                             ? 'rgba(185,28,28,0.18)'
@@ -614,8 +898,8 @@ function App() {
                     >
                       <span
                         style={{
-                          width: 6,
-                          height: 6,
+                          width: 5,
+                          height: 5,
                           borderRadius: '999px',
                           backgroundColor:
                             r.status === 'locked'
@@ -627,51 +911,26 @@ function App() {
                       />
                       <span>
                         {r.status === 'locked'
-                          ? 'Verrouillée (intrusion)'
+                          ? 'Verrouillée'
                           : r.status === 'occupied'
                           ? 'Occupée'
+                          : r.status === 'maintenance'
+                          ? 'Maintenance'
                           : 'Disponible'}
                       </span>
                     </div>
-                    {r.status === 'locked' && (
-                      <button
-                        type="button"
-                        onClick={async () => {
-                          try {
-                            await fetch(`${API_URL}/rooms/unlock`, {
-                              method: 'POST',
-                              headers: { 'Content-Type': 'application/json' },
-                              body: JSON.stringify({ roomId: r.id }),
-                            });
-                            await fetchRooms();
-                            await fetchLogs();
-                          } catch {
-                            alert("Erreur lors du déverrouillage de la chambre.");
-                          }
-                        }}
-                        style={{
-                          marginTop: '0.45rem',
-                          paddingInline: '0.9rem',
-                          fontSize: '0.78rem',
-                          background:
-                            'linear-gradient(135deg, rgba(127,29,29,0.9), rgba(185,28,28,0.95))',
-                          borderColor: 'rgba(248,113,113,0.9)',
-                        }}
-                      >
-                        Lever l'alerte
-                      </button>
-                    )}
                   </div>
                 ))}
                 {rooms.length === 0 && (
                   <p style={{ fontSize: '0.85rem', color: '#6b7280' }}>
-                    Aucune chambre chargée pour l'instant.
+                    Aucune chambre chargée.
                   </p>
                 )}
               </div>
-            </div>
+            </section>
 
-            <div
+            {/* Doors */}
+            <section
               style={{
                 background: 'radial-gradient(circle at top, #020617, #020617)',
                 borderRadius: '1.5rem',
@@ -679,385 +938,117 @@ function App() {
                 border: '1px solid rgba(55,65,81,0.8)',
               }}
             >
-              <h2 style={{ margin: 0, color: '#9ca3af' }}>Clients & réservations</h2>
-              <p style={{ marginTop: '0.5rem', fontSize: '0.8rem', color: '#6b7280' }}>
-                Prototype de fichier client et de gestion de réservations pour check-in anticipé.
-              </p>
-
+              <div
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  marginBottom: '0.75rem',
+                }}
+              >
+                <h2 style={{ margin: 0, color: '#9ca3af' }}>Portes (Serrures)</h2>
+                <button
+                  onClick={fetchDoors}
+                  style={{ paddingInline: '1rem', fontSize: '0.8rem' }}
+                >
+                  Rafraîchir
+                </button>
+              </div>
               <div
                 style={{
                   display: 'grid',
-                  gridTemplateColumns: 'minmax(0, 1.05fr) minmax(0, 1.4fr)',
-                  gap: '1rem',
-                  marginTop: '0.5rem',
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))',
+                  gap: '0.75rem',
                 }}
               >
-                <form onSubmit={handleCreateClient} style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                  <div style={{ fontSize: '0.8rem', color: '#9ca3af', fontWeight: 500 }}>Nouveau client</div>
-                  <input
-                    placeholder="Nom"
-                    value={newClientName}
-                    onChange={(e) => setNewClientName(e.target.value)}
-                  />
-                  <input
-                    placeholder="Email (optionnel)"
-                    value={newClientEmail}
-                    onChange={(e) => setNewClientEmail(e.target.value)}
-                  />
-                  <input
-                    type="password"
-                    placeholder="Mot de passe (nécessaire pour connexion iOS si email renseigné)"
-                    value={newClientPassword}
-                    onChange={(e) => setNewClientPassword(e.target.value)}
-                  />
-                  <div style={{ fontSize: '0.72rem', color: '#6b7280', lineHeight: 1.3 }}>
-                    Si tu mets un email mais pas de mot de passe, le GRMS générera un mot de passe de démo et te l’affichera une seule fois.
-                  </div>
-                  <button type="submit" disabled={creatingClient} style={{ width: 'fit-content' }}>
-                    {creatingClient ? 'Création…' : 'Ajouter le client'}
-                  </button>
-                  {clients.length > 0 && (
-                    <div
-                      style={{
-                        fontSize: '0.75rem',
-                        color: '#6b7280',
-                        maxHeight: 70,
-                        overflowY: 'auto',
-                        borderTop: '1px solid rgba(55,65,81,0.9)',
-                        paddingTop: '0.35rem',
-                      }}
-                    >
-                      Clients existants :
-                      <ul style={{ margin: '0.25rem 0 0', paddingLeft: '1rem' }}>
-                        {clients.map((c) => (
-                          <li
-                            key={c.id}
-                            style={{
-                              cursor: 'pointer',
-                              color: selectedClientId === c.id ? '#e5e7eb' : '#9ca3af',
-                            }}
-                            onClick={() => fetchClientDetails(c.id)}
-                          >
-                            #{c.id} {c.name}
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-                </form>
-
-                <form
-                  onSubmit={handleCreateReservation}
-                  style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}
-                >
-                  <div style={{ fontSize: '0.8rem', color: '#9ca3af', fontWeight: 500 }}>Nouvelle réservation</div>
-                  <select
-                    value={newResClientId}
-                    onChange={(e) => setNewResClientId(e.target.value)}
-                    style={{ padding: '0.55rem 0.75rem', borderRadius: '0.75rem' }}
-                  >
-                    <option value="">Choisir un client…</option>
-                    {clients.map((c) => (
-                      <option key={c.id} value={c.id}>
-                        #{c.id} {c.name}
-                      </option>
-                    ))}
-                  </select>
-                  <input
-                    type="number"
-                    placeholder="Room ID (ex: 101)"
-                    value={newResRoomId}
-                    onChange={(e) => setNewResRoomId(e.target.value)}
-                  />
-                  <input
-                    type="datetime-local"
-                    value={newResStart}
-                    onChange={(e) => setNewResStart(e.target.value)}
-                  />
-                  <input
-                    type="datetime-local"
-                    value={newResEnd}
-                    onChange={(e) => setNewResEnd(e.target.value)}
-                  />
+                {doors.map((d) => (
                   <div
-                    style={{
-                      display: 'flex',
-                      gap: '0.5rem',
-                      alignItems: 'center',
-                      flexWrap: 'wrap',
-                      marginTop: '0.4rem',
-                    }}
-                  >
-                    <button
-                      type="submit"
-                      disabled={creatingReservation}
-                      style={{ padding: '0.45rem 0.9rem', fontSize: '0.8rem' }}
-                    >
-                      {creatingReservation ? 'Enregistrement…' : 'Enregistrer la réservation'}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleCheckinFromLastReservation}
-                      style={{ padding: '0.45rem 0.9rem', fontSize: '0.8rem' }}
-                    >
-                      Check-in depuis la dernière réservation
-                    </button>
-                  </div>
-                  <div style={{ fontSize: '0.75rem', color: '#6b7280', maxHeight: 70, overflowY: 'auto' }}>
-                    Dernières réservations :{' '}
-                    {reservations.length === 0
-                      ? 'aucune'
-                      : reservations
-                          .slice(0, 3)
-                          .map(
-                            (r) =>
-                              `#${r.id} client ${r.client?.name || r.clientId} · chambre ${
-                                r.roomId
-                              } · ${r.status}`,
-                          )
-                          .join(' | ')}
-                  </div>
-                </form>
-              </div>
-
-              {selectedClientDetails && (
-                <div
-                  style={{
-                    marginTop: '1rem',
-                    paddingTop: '0.6rem',
-                    borderTop: '1px solid rgba(55,65,81,0.9)',
-                    fontSize: '0.78rem',
-                    color: '#9ca3af',
-                  }}
-                >
-                  <div
-                    style={{
-                      fontWeight: 600,
-                      marginBottom: '0.4rem',
-                      color: '#e5e7eb',
-                    }}
-                  >
-                    Fiche client sélectionné
-                  </div>
-                  <div
+                    key={d.door_id}
                     style={{
                       borderRadius: '1rem',
-                      padding: '0.75rem 0.9rem',
-                      background: 'rgba(15,23,42,0.85)',
-                      border: '1px solid rgba(55,65,81,0.9)',
-                      marginBottom: '0.7rem',
+                      padding: '0.8rem',
+                      background: 'rgba(15,23,42,0.9)',
+                      border: '1px solid rgba(75,85,99,0.9)',
                     }}
                   >
-                  <form
-                    onSubmit={async (e) => {
-                      e.preventDefault();
-                      try {
-                        await fetch(`${API_URL}/clients/${selectedClientId}`, {
-                          method: 'PUT',
-                          headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify(editingClient),
-                        });
-                        await fetchClients();
-                        await fetchClientDetails(selectedClientId);
-                      } catch {
-                        alert("Erreur lors de la mise à jour du client.");
-                      }
-                    }}
-                    style={{
-                      display: 'grid',
-                      gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
-                      gap: '0.5rem 0.8rem',
-                    }}
-                  >
-                    <label style={{ display: 'block' }}>
-                      <span style={{ display: 'block', marginBottom: '0.15rem' }}>Nom</span>
-                      <input
-                        value={editingClient?.name || ''}
-                        onChange={(e) =>
-                          setEditingClient((prev) => ({ ...(prev || {}), name: e.target.value }))
-                        }
-                      />
-                    </label>
-                    <label style={{ display: 'block' }}>
-                      <span style={{ display: 'block', marginBottom: '0.15rem' }}>Email</span>
-                      <input
-                        value={editingClient?.email || ''}
-                        onChange={(e) =>
-                          setEditingClient((prev) => ({ ...(prev || {}), email: e.target.value }))
-                        }
-                      />
-                    </label>
-                    <label style={{ display: 'block' }}>
-                      <span style={{ display: 'block', marginBottom: '0.15rem' }}>Téléphone</span>
-                      <input
-                        value={editingClient?.phone || ''}
-                        onChange={(e) =>
-                          setEditingClient((prev) => ({ ...(prev || {}), phone: e.target.value }))
-                        }
-                      />
-                    </label>
-                    <label style={{ display: 'block' }}>
-                      <span style={{ display: 'block', marginBottom: '0.15rem' }}>Statut</span>
-                      <input
-                        placeholder="ex: Gold, Famille…"
-                        value={editingClient?.status || ''}
-                        onChange={(e) =>
-                          setEditingClient((prev) => ({ ...(prev || {}), status: e.target.value }))
-                        }
-                      />
-                    </label>
-                    <div style={{ gridColumn: '1 / -1', marginTop: '0.3rem' }}>
-                      <button type="submit" style={{ fontSize: '0.78rem', padding: '0.35rem 1.1rem' }}>
-                        Mettre à jour la fiche
-                      </button>
-                    </div>
-                  </form>
-                  </div>
-
-                  <div style={{ marginTop: '0.5rem' }}>
-                    <strong>Réservations :</strong>
-                    {selectedClientDetails.reservations.length === 0 ? (
-                      <span> aucune</span>
-                    ) : (
-                      <ul style={{ margin: '0.25rem 0 0', paddingLeft: '1rem' }}>
-                        {selectedClientDetails.reservations.map((r) => (
-                          <li key={r.id}>
-                            #{r.id} · chambre {r.roomId} · {r.status}
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </div>
-                  <div style={{ marginTop: '0.4rem' }}>
-                    <strong>Logs associés :</strong>
-                    {selectedClientDetails.logs.length === 0 ? (
-                      <span> aucun</span>
-                    ) : (
-                      <ul style={{ margin: '0.25rem 0 0', paddingLeft: '1rem', maxHeight: 80, overflowY: 'auto' }}>
-                        {selectedClientDetails.logs.map((l, idx) => (
-                          <li key={idx}>
-                            {l.type} · chambre {l.roomId || '-'} · {new Date(l.time).toLocaleTimeString()}
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </div>
-                </div>
-              )}
-
-              {/* Simulation d'applis smartphone (multi-téléphones) */}
-              <div
-                style={{
-                  marginTop: '1.25rem',
-                  borderTop: '1px solid rgba(55,65,81,0.8)',
-                  paddingTop: '1.1rem',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: '0.8rem',
-                }}
-              >
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                  <div style={{ fontSize: '0.8rem', color: '#9ca3af' }}>Simulation smartphones client</div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.8rem' }}>
-                    <span style={{ color: '#6b7280' }}>Nombre de téléphones</span>
-                    <select
-                      value={phonesCount}
-                      onChange={(e) => setPhonesCount(Number(e.target.value))}
-                      style={{ borderRadius: '999px', padding: '0.2rem 0.6rem', fontSize: '0.8rem' }}
-                    >
-                      <option value={1}>1</option>
-                      <option value={2}>2</option>
-                      <option value={3}>3</option>
-                    </select>
-                  </div>
-                </div>
-
-                <div
-                  style={{
-                    display: 'grid',
-                    gridTemplateColumns: `repeat(${phonesCount}, minmax(0, 1fr))`,
-                    gap: '0.8rem',
-                  }}
-                >
-                  {Array.from({ length: phonesCount }).map((_, idx) => (
+                    <div style={{ fontSize: '0.75rem', color: '#6b7280' }}>Porte</div>
                     <div
-                      key={idx}
                       style={{
-                        margin: '0 auto',
-                        maxWidth: 260,
-                        borderRadius: '2rem',
-                        padding: '1rem 1.1rem 1.3rem',
-                        background:
-                          'radial-gradient(circle at top, rgba(15,23,42,0.95), rgba(15,23,42,0.98))',
-                        border: '1px solid rgba(55,65,81,0.9)',
-                        boxShadow: '0 18px 40px rgba(15,23,42,0.9)',
+                        fontSize: '0.85rem',
+                        fontWeight: 600,
+                        fontFamily: 'SF Mono, Menlo, ui-monospace',
                       }}
                     >
-                      <div
+                      {d.ble_id}
+                    </div>
+                    <div
+                      style={{
+                        marginTop: '0.35rem',
+                        fontSize: '0.72rem',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '0.3rem',
+                        color:
+                          d.status === 'online'
+                            ? '#6ee7b7'
+                            : d.status === 'locked'
+                            ? '#fca5a5'
+                            : '#9ca3af',
+                      }}
+                    >
+                      <span
                         style={{
-                          width: 80,
-                          height: 4,
-                          borderRadius: 999,
-                          backgroundColor: '#4b5563',
-                          margin: '0 auto 0.8rem',
+                          width: 6,
+                          height: 6,
+                          borderRadius: '999px',
+                          backgroundColor:
+                            d.status === 'online'
+                              ? '#22c55e'
+                              : d.status === 'locked'
+                              ? '#ef4444'
+                              : '#6b7280',
                         }}
                       />
-                      <div style={{ fontSize: '0.78rem', color: '#9ca3af', marginBottom: '0.1rem' }}>
-                        Smartphone {idx + 1}
-                      </div>
-                      <div style={{ fontSize: '0.92rem', fontWeight: 600, marginBottom: '0.5rem' }}>
-                        Clé numérique
-                      </div>
-                      <div
-                        style={{
-                          fontFamily: 'SF Mono, Menlo, ui-monospace',
-                          fontSize: '0.78rem',
-                          minHeight: 34,
-                          borderRadius: '0.75rem',
-                          padding: '0.45rem 0.6rem',
-                          backgroundColor: 'rgba(15,23,42,0.9)',
-                          border: '1px solid rgba(55,65,81,0.9)',
-                          wordBreak: 'break-all',
-                          color: lastToken ? '#e5e7eb' : '#6b7280',
-                          marginBottom: '0.6rem',
-                        }}
-                      >
-                        {lastToken || 'Aucune clé reçue pour le moment.'}
-                      </div>
+                      {d.status === 'online'
+                        ? 'En ligne'
+                        : d.status === 'locked'
+                        ? 'Verrouillée'
+                        : 'Hors ligne'}
+                    </div>
+                    {d.status === 'locked' && (
                       <button
                         type="button"
-                        onClick={() => handlePhoneAccess(idx)}
+                        onClick={() => handleUnlockDoor(d.door_id)}
                         style={{
+                          marginTop: '0.5rem',
                           width: '100%',
-                          justifyContent: 'center',
+                          fontSize: '0.72rem',
+                          padding: '0.35rem',
+                          background: 'rgba(127,29,29,0.3)',
+                          borderColor: 'rgba(248,113,113,0.7)',
                         }}
                       >
-                        Approcher du lecteur
+                        Déverrouiller
                       </button>
-                      {phoneStatuses[idx] && (
-                        <p
-                          style={{
-                            marginTop: '0.6rem',
-                            fontSize: '0.78rem',
-                            color: phoneStatuses[idx].includes('autorisé') ? '#6ee7b7' : '#fca5a5',
-                          }}
-                        >
-                          {phoneStatuses[idx]}
-                        </p>
-                      )}
-                    </div>
-                  ))}
-                </div>
+                    )}
+                  </div>
+                ))}
+                {doors.length === 0 && (
+                  <p style={{ fontSize: '0.85rem', color: '#6b7280' }}>
+                    Aucune porte connectée.
+                  </p>
+                )}
               </div>
-            </div>
+            </section>
 
-            <div
+            {/* Events log */}
+            <section
               style={{
                 background: 'radial-gradient(circle at top, #020617, #020617)',
                 borderRadius: '1.5rem',
                 padding: '1.25rem 1.5rem',
                 border: '1px solid rgba(55,65,81,0.8)',
-                maxHeight: 260,
+                maxHeight: 300,
                 overflow: 'hidden',
                 display: 'flex',
                 flexDirection: 'column',
@@ -1068,17 +1059,17 @@ function App() {
                   display: 'flex',
                   justifyContent: 'space-between',
                   alignItems: 'center',
-                  marginBottom: '0.4rem',
+                  marginBottom: '0.5rem',
                 }}
               >
-                <h2 style={{ margin: 0, color: '#9ca3af' }}>Logs récents</h2>
-                <button onClick={fetchLogs} style={{ paddingInline: '1rem', fontSize: '0.8rem' }}>
+                <h2 style={{ margin: 0, color: '#9ca3af' }}>Événements d'accès</h2>
+                <button
+                  onClick={fetchEvents}
+                  style={{ paddingInline: '1rem', fontSize: '0.8rem' }}
+                >
                   Rafraîchir
                 </button>
               </div>
-              <p style={{ marginTop: 0, marginBottom: '0.5rem', fontSize: '0.8rem', color: '#6b7280' }}>
-                Historique des check-in et tentatives d'authentification.
-              </p>
               <div
                 style={{
                   flex: 1,
@@ -1086,7 +1077,7 @@ function App() {
                   paddingRight: '0.2rem',
                 }}
               >
-                {logs.length === 0 && (
+                {events.length === 0 && (
                   <p style={{ fontSize: '0.85rem', color: '#6b7280' }}>
                     Aucun événement pour le moment.
                   </p>
@@ -1102,36 +1093,53 @@ function App() {
                     fontSize: '0.8rem',
                   }}
                 >
-                  {logs.map((log, idx) => (
+                  {events.map((ev, idx) => (
                     <li
-                      key={idx}
+                      key={ev.event_id || idx}
                       style={{
-                        padding: '0.35rem 0.5rem',
+                        padding: '0.4rem 0.6rem',
                         borderRadius: '0.75rem',
                         background: 'rgba(15,23,42,0.9)',
                         border: '1px solid rgba(31,41,55,0.8)',
                       }}
                     >
-                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.75rem' }}>
-                        <span style={{ color: '#9ca3af' }}>{log.type}</span>
+                      <div
+                        style={{
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          gap: '0.75rem',
+                        }}
+                      >
+                        <span style={{ color: '#9ca3af' }}>
+                          {ev.door_id?.substring(0, 8) || '-'}
+                        </span>
                         <span
                           style={{
-                            color: log.success === false ? '#fca5a5' : '#6ee7b7',
+                            color:
+                              ev.result === 'success'
+                                ? '#6ee7b7'
+                                : ev.result === 'denied'
+                                ? '#fca5a5'
+                                : '#f97316',
                             fontWeight: 500,
                           }}
                         >
-                          {log.success === false ? 'Échec' : 'OK'}
+                          {ev.result === 'success'
+                            ? 'OK'
+                            : ev.result === 'denied'
+                            ? 'Refusé'
+                            : ev.result}
                         </span>
                       </div>
-                      <div style={{ marginTop: '0.15rem', color: '#6b7280' }}>
-                        Chambre {log.roomId || '-'} · {new Date(log.time).toLocaleTimeString()}
+                      <div style={{ marginTop: '0.1rem', color: '#6b7280', fontSize: '0.75rem' }}>
+                        {ev.ts ? new Date(ev.ts).toLocaleString() : '-'}
                       </div>
                     </li>
                   ))}
                 </ul>
               </div>
-            </div>
-          </section>
+            </section>
+          </div>
         </main>
       </div>
     </div>

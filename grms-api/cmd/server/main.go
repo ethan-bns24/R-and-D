@@ -82,7 +82,7 @@ func main() {
 
 	// Initialize handlers
 	authHandler := handlers.NewAuthHandler(authService)
-	mobileHandler := handlers.NewMobileHandler(grantService)
+	mobileHandler := handlers.NewMobileHandler(grantService, eventRepo)
 	backofficeHandler := handlers.NewBackofficeHandler(grantService, doorService, eventRepo)
 	roomsHandler := handlers.NewRoomsHandler(roomRepo, doorRepo)
 	legacyHandler := handlers.NewLegacyHandler(roomRepo, userRepo, eventRepo)

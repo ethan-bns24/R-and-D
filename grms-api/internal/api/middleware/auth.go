@@ -43,7 +43,7 @@ func (m *JWTMiddleware) VerifyUser(next http.Handler) http.Handler {
 
 		claims, err := jwt.ValidateUserToken(token, m.userSecret)
 		if err != nil {
-			http.Error(w, `{"error": "invalid or expired token"}`, http.StatusUnauthorized)
+			http.Error(w, `{"error": "invalid or expired client token", "details": "`+err.Error()+`"}`, http.StatusUnauthorized)
 			return
 		}
 
@@ -64,7 +64,7 @@ func (m *JWTMiddleware) VerifyStaff(next http.Handler) http.Handler {
 
 		claims, err := jwt.ValidateStaffToken(token, m.staffSecret)
 		if err != nil {
-			http.Error(w, `{"error": "invalid or expired token"}`, http.StatusUnauthorized)
+			http.Error(w, `{"error": "invalid or expired staff token"}`, http.StatusUnauthorized)
 			return
 		}
 
@@ -86,7 +86,7 @@ func (m *JWTMiddleware) VerifyAdmin(next http.Handler) http.Handler {
 
 		claims, err := jwt.ValidateStaffToken(token, m.staffSecret)
 		if err != nil {
-			http.Error(w, `{"error": "invalid or expired token"}`, http.StatusUnauthorized)
+			http.Error(w, `{"error": "invalid or expired admin token"}`, http.StatusUnauthorized)
 			return
 		}
 

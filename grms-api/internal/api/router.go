@@ -89,6 +89,7 @@ func (rt *Router) Setup() http.Handler {
 		r.Route("/mobile", func(r chi.Router) {
 			r.Use(rt.jwtMiddleware.VerifyUser)
 			r.Get("/grants", rt.mobileHandler.GetGrants)
+			r.Post("/access", rt.mobileHandler.RecordAccess)
 		})
 
 		// Rooms (public for listing)

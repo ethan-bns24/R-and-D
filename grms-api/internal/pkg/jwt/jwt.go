@@ -78,6 +78,7 @@ func ValidateUserToken(tokenString, secret string) (*Claims, error) {
 		if errors.Is(err, jwt.ErrTokenExpired) {
 			return nil, ErrExpiredToken
 		}
+		return nil, err
 		return nil, ErrInvalidToken
 	}
 
