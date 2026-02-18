@@ -79,7 +79,6 @@ func ValidateUserToken(tokenString, secret string) (*Claims, error) {
 			return nil, ErrExpiredToken
 		}
 		return nil, err
-		return nil, ErrInvalidToken
 	}
 
 	if claims, ok := token.Claims.(*Claims); ok && token.Valid {

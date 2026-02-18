@@ -18,6 +18,7 @@ type Router struct {
 	backofficeHandler *handlers.BackofficeHandler
 	roomsHandler      *handlers.RoomsHandler
 	legacyHandler     *handlers.LegacyHandler
+	doorHandler       *handlers.DoorHandler
 	jwtMiddleware     *middleware.JWTMiddleware
 }
 
@@ -28,6 +29,7 @@ func NewRouter(
 	backoffice *handlers.BackofficeHandler,
 	rooms *handlers.RoomsHandler,
 	legacy *handlers.LegacyHandler,
+	door *handlers.DoorHandler,
 	jwtMw *middleware.JWTMiddleware,
 ) *Router {
 	return &Router{
@@ -36,6 +38,7 @@ func NewRouter(
 		backofficeHandler: backoffice,
 		roomsHandler:      rooms,
 		legacyHandler:     legacy,
+		doorHandler:       door,
 		jwtMiddleware:     jwtMw,
 	}
 }
@@ -98,6 +101,11 @@ func (rt *Router) Setup() http.Handler {
 			r.Get("/available", rt.roomsHandler.ListAvailable)
 		})
 
+		// Doors (hardware → API)
+		r.Route("/doors", func(r chi.Router) {
+			r.Post("/logs", rt.doorHandler.SubmitLog)
+		})
+
 		// Backoffice (staff auth required)
 		r.Route("/backoffice", func(r chi.Router) {
 			// Staff auth
@@ -111,6 +119,7 @@ func (rt *Router) Setup() http.Handler {
 				r.Post("/revoke", rt.backofficeHandler.Revoke)
 				r.Get("/events", rt.backofficeHandler.Events)
 				r.Get("/doors", rt.backofficeHandler.Doors)
+				r.Get("/doors/{door_id}/grants", rt.backofficeHandler.GetDoorGrants)
 				r.Post("/doors/unlock", rt.backofficeHandler.UnlockDoor)
 			})
 		})

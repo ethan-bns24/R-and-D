@@ -86,6 +86,7 @@ func main() {
 	backofficeHandler := handlers.NewBackofficeHandler(grantService, doorService, eventRepo)
 	roomsHandler := handlers.NewRoomsHandler(roomRepo, doorRepo)
 	legacyHandler := handlers.NewLegacyHandler(roomRepo, userRepo, eventRepo)
+	doorHandler := handlers.NewDoorHandler()
 
 	// Initialize JWT middleware
 	jwtMiddleware := middleware.NewJWTMiddleware(cfg.JWT.Secret, cfg.JWT.StaffSecret)
@@ -97,6 +98,7 @@ func main() {
 		backofficeHandler,
 		roomsHandler,
 		legacyHandler,
+		doorHandler,
 		jwtMiddleware,
 	)
 

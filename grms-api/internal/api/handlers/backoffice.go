@@ -4,11 +4,12 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/google/uuid"
-
 	"grms-backend/internal/api/middleware"
 	"grms-backend/internal/repository"
 	"grms-backend/internal/service"
+
+	chi "github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 )
 
 // BackofficeHandler handles backoffice endpoints
@@ -176,4 +177,25 @@ func (h *BackofficeHandler) UnlockDoor(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, map[string]bool{"ok": true}, http.StatusOK)
+}
+
+func (h *BackofficeHandler) GetDoorGrants(w http.ResponseWriter, r *http.Request) {
+	doorIDStr := chi.URLParam(r, "door_id")
+	doorID, err := uuid.Parse(doorIDStr)
+	if err != nil {
+		writeError(w, "invalid door_id", http.StatusBadRequest)
+		return
+	}
+
+	// Get grants for this door from grantService
+	grants, err := h.grantService.GetGrantByID(r.Context(), doorID)
+	if err != nil {
+		writeError(w, "failed to fetch grants", http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, map[string]interface{}{
+		"door_id": doorID,
+		"grants":  grants,
+	}, http.StatusOK)
 }
