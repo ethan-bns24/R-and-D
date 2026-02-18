@@ -1,0 +1,41 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: grms-postgres
+    environment:
+      POSTGRES_USER: grms
+      POSTGRES_PASSWORD: grms
+      POSTGRES_DB: grms
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U grms"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  grms-api:
+    build: .
+    container_name: grms-api
+    ports:
+      - "4000:4000"   # REST API
+      - "4001:4001"   # DoorLink WebSocket
+    environment:
+      PORT: "4000"
+      DOORLINK_PORT: "4001"
+      DATABASE_URL: "postgres://grms:grms@postgres:5432/grms?sslmode=disable"
+      JWT_SECRET: "grms-secret-key-change-in-production"
+      JWT_STAFF_SECRET: "grms-staff-secret-change-in-production"
+      MASTER_KEY: "0123456789abcdef0123456789abcdef"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pgdata:
