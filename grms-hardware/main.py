@@ -7,7 +7,6 @@ import time
 import websockets
 
 DOOR_API_TOKEN = "door-token-mvp"
-
 # Exemple: un user "key_id" autorisé + secret_door (32 bytes)
 KEY_ID = uuid.UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
 GRANT_ID = uuid.UUID("99999999-8888-7777-6666-555555555555")
