@@ -235,7 +235,7 @@ struct ContentView: View {
                         .padding(.top, 8)
 
                         // Description
-                        Text("Colle ici la clé sécurisée reçue lors de ton check-in pour ouvrir la chambre sans contact.")
+                        Text("Ta clé est récupérée automatiquement depuis le GRMS (mode démo). Approche-toi du lecteur pour ouvrir sans contact.")
                             .font(.system(size: 13))
                             .foregroundColor(Color(red: 0.62, green: 0.64, blue: 0.69))
                             .multilineTextAlignment(.center)
@@ -243,15 +243,15 @@ struct ContentView: View {
 
                         // Formulaire
                         VStack(spacing: 16) {
-                            // Champ Chambre
+                            // Champ Chambre (lecture seule)
                             VStack(alignment: .leading, spacing: 6) {
                                 Text("Numéro de chambre")
                                     .font(.system(size: 13))
                                     .foregroundColor(Color(red: 0.62, green: 0.64, blue: 0.69))
-                                TextField("101", text: $viewModel.roomId)
-                                    .keyboardType(.numberPad)
+                                Text(viewModel.roomId.isEmpty ? "---" : viewModel.roomId)
                                     .font(.system(size: 16))
                                     .foregroundColor(.white)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
                                     .padding(.horizontal, 16)
                                     .padding(.vertical, 12)
                                     .background(Color(red: 0.06, green: 0.09, blue: 0.16))
@@ -262,37 +262,45 @@ struct ContentView: View {
                                     )
                             }
 
-                            // Champ Token
+                            // Clé numérique (masquée)
                             VStack(alignment: .leading, spacing: 6) {
                                 Text("Clé numérique")
                                     .font(.system(size: 13))
                                     .foregroundColor(Color(red: 0.62, green: 0.64, blue: 0.69))
-                                TextEditor(text: $viewModel.token)
-                                    .font(.system(size: 14, design: .monospaced))
-                                    .foregroundColor(.white)
-                                    .scrollContentBackground(.hidden)
-                                    .frame(minHeight: 80)
-                                    .padding(.horizontal, 12)
-                                    .padding(.vertical, 8)
-                                    .background(Color(red: 0.06, green: 0.09, blue: 0.16))
-                                    .cornerRadius(14)
-                                    .overlay(
-                                        RoundedRectangle(cornerRadius: 14)
-                                            .stroke(Color(red: 0.22, green: 0.25, blue: 0.32), lineWidth: 1)
-                                    )
-                                    .overlay(
-                                        Group {
-                                            if viewModel.token.isEmpty {
-                                                Text("colle ici le token généré côté accueil")
-                                                    .font(.system(size: 14, design: .monospaced))
-                                                    .foregroundColor(Color(red: 0.42, green: 0.45, blue: 0.50))
-                                                    .padding(.leading, 16)
-                                                    .padding(.top, 16)
-                                                    .allowsHitTesting(false)
-                                            }
-                                        },
-                                        alignment: .topLeading
-                                    )
+                                HStack(spacing: 12) {
+                                    Image(systemName: viewModel.token.isEmpty ? "lock.open" : "lock.fill")
+                                        .font(.system(size: 20))
+                                        .foregroundColor(viewModel.token.isEmpty ? Color(red: 0.62, green: 0.64, blue: 0.69) : Color(red: 0.47, green: 0.91, blue: 0.80))
+
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        if viewModel.token.isEmpty {
+                                            Text("Aucune clé active")
+                                                .font(.system(size: 14))
+                                                .foregroundColor(Color(red: 0.42, green: 0.45, blue: 0.50))
+                                            Text("En attente d'un accès GRMS…")
+                                                .font(.system(size: 12))
+                                                .foregroundColor(Color(red: 0.42, green: 0.45, blue: 0.50))
+                                        } else {
+                                            Text("Clé active")
+                                                .font(.system(size: 14, weight: .semibold))
+                                                .foregroundColor(Color(red: 0.47, green: 0.91, blue: 0.80))
+                                            Text("Prête pour l'ouverture")
+                                                .font(.system(size: 12))
+                                                .foregroundColor(Color(red: 0.62, green: 0.64, blue: 0.69))
+                                        }
+                                    }
+
+                                    Spacer()
+                                }
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 16)
+                                .frame(minHeight: 80)
+                                .background(Color(red: 0.06, green: 0.09, blue: 0.16))
+                                .cornerRadius(14)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 14)
+                                        .stroke(Color(red: 0.22, green: 0.25, blue: 0.32), lineWidth: 1)
+                                )
                             }
                         }
                         .padding(.horizontal, 20)
@@ -331,18 +339,19 @@ struct ContentView: View {
 
                         // Message de statut
                         if !viewModel.statusMessage.isEmpty {
+                            let isSuccess = viewModel.statusMessage.contains("autorisé") || viewModel.statusMessage.contains("Accès trouvé")
                             HStack {
-                                Image(systemName: viewModel.statusMessage.contains("autorisé") ? "checkmark.circle.fill" : "xmark.circle.fill")
-                                    .foregroundColor(viewModel.statusMessage.contains("autorisé") ? Color(red: 0.13, green: 0.64, blue: 0.29) : Color(red: 0.73, green: 0.29, blue: 0.29))
+                                Image(systemName: isSuccess ? "checkmark.circle.fill" : "xmark.circle.fill")
+                                    .foregroundColor(isSuccess ? Color(red: 0.13, green: 0.64, blue: 0.29) : Color(red: 0.73, green: 0.29, blue: 0.29))
                                 Text(viewModel.statusMessage)
                                     .font(.system(size: 13))
-                                    .foregroundColor(viewModel.statusMessage.contains("autorisé") ? Color(red: 0.47, green: 0.91, blue: 0.80) : Color(red: 1.0, green: 0.79, blue: 0.79))
+                                    .foregroundColor(isSuccess ? Color(red: 0.47, green: 0.91, blue: 0.80) : Color(red: 1.0, green: 0.79, blue: 0.79))
                             }
                             .padding(.horizontal, 16)
                             .padding(.vertical, 12)
                             .frame(maxWidth: .infinity)
                             .background(
-                                viewModel.statusMessage.contains("autorisé")
+                                isSuccess
                                     ? Color(red: 0.09, green: 0.64, blue: 0.29).opacity(0.2)
                                     : Color(red: 0.73, green: 0.11, blue: 0.11).opacity(0.22)
                             )
@@ -350,7 +359,7 @@ struct ContentView: View {
                             .overlay(
                                 RoundedRectangle(cornerRadius: 14)
                                     .stroke(
-                                        viewModel.statusMessage.contains("autorisé")
+                                        isSuccess
                                             ? Color(red: 0.29, green: 0.87, blue: 0.50).opacity(0.7)
                                             : Color(red: 0.97, green: 0.44, blue: 0.44).opacity(0.7),
                                         lineWidth: 1

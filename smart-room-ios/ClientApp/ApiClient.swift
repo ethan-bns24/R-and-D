@@ -3,7 +3,7 @@ import Foundation
 /// Client HTTP vers le GRMS et le room-core (cœur de chambre) qui simule la porte.
 final class ApiClient {
     /// IP locale de ton Mac (trouvée via `ipconfig getifaddr en0`)
-    private let grmsURL = URL(string: "http://10.5.174.21:4000")!
+    private let grmsURL = URL(string: "http://172.20.10.2:4000")!
     private let roomCoreURL = URL(string: "http://10.5.174.21:5001")!
 
     private let session: URLSession
@@ -86,6 +86,52 @@ final class ApiClient {
         let ok: Bool
         let reason: String?
         let lockedUntil: String?
+    }
+
+    // MARK: - Endpoints "mobile" alignés sur le dashboard web
+
+    struct MobileDoor: Decodable {
+        let door_id: String
+        let ble_id: String?
+    }
+
+    struct MobileGrant: Decodable {
+        let grant_id: String
+        let room_number: String?
+        let from_ts: Int?
+        let to_ts: Int?
+        let doors: [MobileDoor]?
+    }
+
+    struct MobileGrantsResponse: Decodable {
+        let grants: [MobileGrant]
+    }
+
+    /// Récupère les "grants" de l'utilisateur connecté via /v1/mobile/grants (même endpoint que la simu téléphone du dashboard web)
+    func getMobileGrants() async throws -> MobileGrantsResponse {
+        guard let jwtToken = AuthService.shared.getToken() else {
+            throw ApiError.unauthorized
+        }
+
+        var request = URLRequest(url: grmsURL.appendingPathComponent("/v1/mobile/grants"))
+        request.httpMethod = "GET"
+        request.addValue("Bearer \(jwtToken)", forHTTPHeaderField: "Authorization")
+        request.timeoutInterval = 10.0
+
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw URLError(.badServerResponse)
+        }
+
+        if http.statusCode == 401 {
+            throw ApiError.unauthorized
+        }
+
+        if !(200..<300).contains(http.statusCode) {
+            throw URLError(.badServerResponse)
+        }
+
+        return try JSONDecoder().decode(MobileGrantsResponse.self, from: data)
     }
 
     /// Appelle le room-core pour authentifier le token et ouvrir la porte.
