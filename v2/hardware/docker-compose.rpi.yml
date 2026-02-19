@@ -1,0 +1,29 @@
+services:
+  door-hardware:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: door-hardware
+    restart: unless-stopped
+    network_mode: host
+    privileged: true
+    environment:
+      DOOR_ID: ${DOOR_ID:-1a7d2ade-c63e-40f3-ace2-7798e752ee45}
+      DOORLINK_URL: ${DOORLINK_URL:-ws://127.0.0.1:8000/doorlink/ws}
+      DOOR_API_TOKEN: ${DOOR_API_TOKEN:-}
+      FW_VERSION: ${FW_VERSION:-1.0.0}
+      BLE_LOCAL_NAME: ${BLE_LOCAL_NAME:-DoorAccess-1a7d2ade}
+      BLE_REQUIRE_ENCRYPTION: ${BLE_REQUIRE_ENCRYPTION:-false}
+      BLE_ADAPTER_ADDRESS: ${BLE_ADAPTER_ADDRESS:-}
+      OPEN_MS: ${OPEN_MS:-700}
+      OPEN_COOLDOWN_SEC: ${OPEN_COOLDOWN_SEC:-1.0}
+      NONCE_TTL_SEC: ${NONCE_TTL_SEC:-30}
+      INTRUSION_WINDOW_SEC: ${INTRUSION_WINDOW_SEC:-300}
+      INTRUSION_THRESHOLD: ${INTRUSION_THRESHOLD:-3}
+      LED_GPIO: ${LED_GPIO:-17}
+      STATE_FILE: ${STATE_FILE:-/data/door_state.json}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      DBUS_SYSTEM_BUS_ADDRESS: unix:path=/var/run/dbus/system_bus_socket
+    volumes:
+      - ./data:/data
+      - /var/run/dbus:/var/run/dbus
