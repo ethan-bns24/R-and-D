@@ -1,6 +1,9 @@
 import { useEffect, useState, useCallback } from 'react';
 
-const API_URL = (import.meta.env.VITE_API_URL || '').replace(/\/+$/, '');
+const API_URL = (
+  import.meta.env.VITE_API_URL ||
+  `${window.location.protocol}//${window.location.hostname}:4000`
+).replace(/\/+$/, '');
 console.log('Configured API base URL:', API_URL || '(same-origin)');
 
 // Token staff hardcodé pour la démo (valide 10 ans)
