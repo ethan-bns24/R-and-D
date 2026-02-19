@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 import websockets
-from bluezero import peripheral
+from bluezero import adapter, peripheral
 
 try:
     import RPi.GPIO as GPIO  # type: ignore
@@ -93,6 +93,7 @@ class Config:
 
     ble_local_name: str
     ble_require_encryption: bool
+    ble_adapter_address: str | None
 
     doorlink_url: str
     door_api_token: str
@@ -119,6 +120,7 @@ class Config:
             capabilities=env_int("CAPABILITIES", 0b0000_0000_0000_0001),
             ble_local_name=ble_name,
             ble_require_encryption=env_bool("BLE_REQUIRE_ENCRYPTION", False),
+            ble_adapter_address=os.getenv("BLE_ADAPTER_ADDRESS"),
             doorlink_url=os.getenv("DOORLINK_URL", "ws://127.0.0.1:4001"),
             door_api_token=os.getenv("DOOR_API_TOKEN", ""),
             fw_version=os.getenv("FW_VERSION", "1.0.0"),
@@ -701,6 +703,21 @@ class DoorAgent:
             return [*base_flags, "encrypt-authenticated-write"]
         return base_flags
 
+    def _resolve_adapter_address(self) -> str | None:
+        if self.cfg.ble_adapter_address:
+            return self.cfg.ble_adapter_address
+        try:
+            adapters = adapter.Adapter.available()
+            if adapters:
+                first = adapters[0]
+                # bluezero objects expose adapter MAC as `.address`
+                addr = getattr(first, "address", None)
+                if isinstance(addr, str) and addr:
+                    return addr
+        except Exception as exc:
+            logging.warning("Unable to discover BLE adapter automatically: %s", exc)
+        return None
+
     def _build_peripheral(self) -> peripheral.Peripheral:
         ctor = peripheral.Peripheral
         params = inspect.signature(ctor).parameters
@@ -709,7 +726,13 @@ class DoorAgent:
         if "adapter_addr" in params:
             return ctor(adapter_addr=None, local_name=self.cfg.ble_local_name, appearance=0)
         if "adapter_address" in params:
-            return ctor(adapter_address=None, local_name=self.cfg.ble_local_name, appearance=0)
+            adapter_address = self._resolve_adapter_address()
+            if not adapter_address:
+                raise RuntimeError(
+                    "No BLE adapter found. Set BLE_ADAPTER_ADDRESS (example: AA:BB:CC:DD:EE:FF)."
+                )
+            logging.info("Using BLE adapter address: %s", adapter_address)
+            return ctor(adapter_address=adapter_address, local_name=self.cfg.ble_local_name, appearance=0)
         if "local_name" in params:
             try:
                 return ctor(local_name=self.cfg.ble_local_name, appearance=0)
