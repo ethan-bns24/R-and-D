@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     app_name: str = Field(default='Hotel Access V2', alias='APP_NAME')
     app_env: str = Field(default='dev', alias='APP_ENV')
     app_host: str = Field(default='0.0.0.0', alias='APP_HOST')
-    app_port: int = Field(default=8000, alias='APP_PORT')
+    app_port: int = Field(default=18000, alias='APP_PORT')
 
     cors_origins: str = Field(default='http://localhost:5173', alias='CORS_ORIGINS')
     database_url: str = Field(default='sqlite:///./data/demo.db', alias='DATABASE_URL')
@@ -41,4 +41,5 @@ class Settings(BaseSettings):
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     return Settings()
+
 

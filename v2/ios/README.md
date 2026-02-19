@@ -10,7 +10,8 @@ Folder format matches the existing `ios/` layout.
 - `ClientApp/SmartRoomClientApp.swift`: app entry point
 
 Default API base URL fallback:
-- `http://10.42.0.1:8000`
+- `http://10.42.0.1:18000`
 
 You can override it in app runtime with:
 - `UserDefaults` key: `api_base_url`
+

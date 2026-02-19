@@ -1,4 +1,4 @@
-services:
+﻿services:
   door-hardware:
     build:
       context: .
@@ -9,7 +9,7 @@ services:
     privileged: true
     environment:
       DOOR_ID: ${DOOR_ID:-1a7d2ade-c63e-40f3-ace2-7798e752ee45}
-      DOORLINK_URL: ${DOORLINK_URL:-ws://127.0.0.1:8000/doorlink/ws}
+      DOORLINK_URL: ${DOORLINK_URL:-ws://127.0.0.1:18000/doorlink/ws}
       DOOR_API_TOKEN: ${DOOR_API_TOKEN:-}
       FW_VERSION: ${FW_VERSION:-1.0.0}
       BLE_LOCAL_NAME: ${BLE_LOCAL_NAME:-DoorAccess-1a7d2ade}
@@ -27,3 +27,4 @@ services:
     volumes:
       - ./data:/data
       - /var/run/dbus:/var/run/dbus
+

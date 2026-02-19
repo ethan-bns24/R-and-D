@@ -12,4 +12,5 @@ RUN pip install -r /app/requirements.txt
 COPY app /app/app
 RUN mkdir -p /app/data
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["sh", "-c", "uvicorn app.main:app --host ${APP_HOST:-0.0.0.0} --port ${APP_PORT:-18000}"]
+

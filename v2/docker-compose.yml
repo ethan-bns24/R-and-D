@@ -10,17 +10,18 @@
     volumes:
       - ./backend/data:/app/data
     ports:
-      - "8000:8000"
+      - "18000:18000"
 
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        VITE_API_URL: http://localhost:8000
+        VITE_API_URL: http://localhost:18000
     container_name: v2-frontend
     restart: unless-stopped
     depends_on:
       - backend
     ports:
       - "5173:80"
+

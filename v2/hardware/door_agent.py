@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 from __future__ import annotations
 
 import asyncio
@@ -123,7 +123,7 @@ class Config:
             ble_local_name=ble_name,
             ble_require_encryption=env_bool("BLE_REQUIRE_ENCRYPTION", False),
             ble_adapter_address=os.getenv("BLE_ADAPTER_ADDRESS"),
-            doorlink_url=os.getenv("DOORLINK_URL", "ws://127.0.0.1:8000/doorlink/ws"),
+            doorlink_url=os.getenv("DOORLINK_URL", "ws://127.0.0.1:18000/doorlink/ws"),
             door_api_token=os.getenv("DOOR_API_TOKEN", ""),
             fw_version=os.getenv("FW_VERSION", "1.0.0"),
             led_gpio=env_int("LED_GPIO", 17),
@@ -871,3 +871,4 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         pass
+
