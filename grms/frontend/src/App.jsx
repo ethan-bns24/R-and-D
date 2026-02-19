@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:4000';
-console.log('API_URL configurée:', API_URL);
+const API_URL = (import.meta.env.VITE_API_URL || '').replace(/\/+$/, '');
+console.log('Configured API base URL:', API_URL || '(same-origin)');
 
 // Token staff hardcodé pour la démo (valide 10 ans)
 const DEMO_STAFF_TOKEN = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdGFmZl9pZCI6ImE4YzQ4NmE1LTc3MDEtNDVjZS04YTRhLThlZjEzNjA2MDdhNiIsImVtYWlsIjoiYWRtaW5AZGVtby5sb2NhbCIsIm5hbWUiOiJBZG1pbiBEZW1vIiwicm9sZSI6ImFkbWluIiwiZXhwIjo0ODY3MTIwMDAwLCJpYXQiOjE3Mzk4NDgwMDAsImlzcyI6ImdybXMtc3RhZmYifQ.qaW9gmamDHVAQIjru75UZdRSYg9fBhabX-EwqCXpk2E';
