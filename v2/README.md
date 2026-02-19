@@ -18,6 +18,10 @@ Open:
 - Backoffice UI: `http://localhost:5173`
 - Backend health: `http://localhost:18000/health`
 
+Note:
+- The frontend proxies API calls through `/api` to the backend container.
+- From another machine, open only `http://<host-ip>:5173` and API calls stay on the server side.
+
 Seed credentials:
 - Staff: `staff@example.com` / `staff123`
 - Guest: `guest@example.com` / `guest123`

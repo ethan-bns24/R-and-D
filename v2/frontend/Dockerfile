@@ -4,7 +4,7 @@ WORKDIR /app
 COPY package.json /app/package.json
 RUN npm install
 COPY . /app
-ARG VITE_API_URL=http://localhost:18000
+ARG VITE_API_URL=/api
 ENV VITE_API_URL=$VITE_API_URL
 RUN npm run build
 
