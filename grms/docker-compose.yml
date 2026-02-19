@@ -2,67 +2,85 @@ services:
   postgres:
     image: postgres:16-alpine
     container_name: grms-postgres
+    restart: unless-stopped
     environment:
-      POSTGRES_USER: "grms"
-      POSTGRES_PASSWORD: "grms"
-      POSTGRES_DB: "grms"
+      POSTGRES_DB: grms
+      POSTGRES_USER: grms
+      POSTGRES_PASSWORD: grms
     volumes:
-      - pgdata:/var/lib/postgresql/data
-      - ./backend/migrations:/docker-entrypoint-initdb.d:ro
+      - ./backend/postgres_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U grms -d grms"]
       interval: 5s
-      timeout: 5s
-      retries: 10
-    restart: unless-stopped
+      timeout: 3s
+      retries: 20
 
   backend:
     build:
       context: ./backend
       dockerfile: Dockerfile
     container_name: grms-backend
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
     environment:
-      PORT: "4000"
-      DOORLINK_PORT: "4001"
-      DATABASE_URL: "postgres://grms:grms@postgres:5432/grms?sslmode=disable"
-      JWT_SECRET: "grms-secret-key-change-in-production"
-      JWT_STAFF_SECRET: "grms-staff-secret-change-in-production"
-      MASTER_KEY: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-      DOOR_API_TOKEN: "door-token-mvp"
-    ports:
-      - "4000:4000"
-      - "4001:4001"
+      DATABASE_URL: postgresql+pg8000://grms:grms@postgres:5432/grms
+      SEED_ON_START: "false"
+      CORS_ORIGINS: http://localhost:5173,http://10.42.0.1:5173
     depends_on:
       postgres:
         condition: service_healthy
-    restart: unless-stopped
+    ports:
+      - "18000:18000"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:18000/health')\""]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  seed:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: grms-seed
+    profiles:
+      - seed
+    env_file:
+      - ./backend/.env
+    environment:
+      DATABASE_URL: postgresql+pg8000://grms:grms@postgres:5432/grms
+      SEED_ON_START: "false"
+    command: ["python", "-m", "app.db.seed_runner"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
 
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      args:
+        VITE_API_URL: /api
     container_name: grms-frontend
-    ports:
-      - "3000:80"
-    depends_on:
-      - backend
     restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "5173:80"
 
   pgadmin:
     image: dpage/pgadmin4:8
     container_name: grms-pgadmin
-    environment:
-      PGADMIN_DEFAULT_EMAIL: "admin@grms.com"
-      PGADMIN_DEFAULT_PASSWORD: "admin123"
-    ports:
-      - "5051:80"
-    volumes:
-      - pgadmin_data:/var/lib/pgadmin
+    restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
-    restart: unless-stopped
-
-volumes:
-  pgdata:
-  pgadmin_data:
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@admin.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+    ports:
+      - "5051:80"
+    volumes:
+      - ./backend/pgadmin_data:/var/lib/pgadmin

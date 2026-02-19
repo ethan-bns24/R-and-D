@@ -1,13 +1,13 @@
-import { StrictMode } from 'react'
+import React from 'react'
 import { createRoot } from 'react-dom/client'
+import App from './App'
 import './index.css'
-import App from './App.jsx'
-import ClientApp from './ClientApp.jsx'
-
-const isClient = window.location.pathname.startsWith('/client');
+import { ThemeProvider } from './theme/ThemeProvider'
 
 createRoot(document.getElementById('root')).render(
-  <StrictMode>
-    {isClient ? <ClientApp /> : <App />}
-  </StrictMode>,
+  <React.StrictMode>
+    <ThemeProvider>
+      <App />
+    </ThemeProvider>
+  </React.StrictMode>,
 )

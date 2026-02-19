@@ -1,53 +1,16 @@
-# -----------------------------------------------------------------------------
-# Stage 1: deps
-# Download Go modules in a separate layer to maximize Docker build cache reuse.
-# -----------------------------------------------------------------------------
-FROM golang:1.22-alpine AS deps
+﻿FROM python:3.11-slim-bookworm
 
-WORKDIR /src
-
-# git is required for some Go module sources.
-RUN apk add --no-cache git
-
-COPY go.mod go.sum ./
-RUN go mod download
-
-# -----------------------------------------------------------------------------
-# Stage 2: builder
-# Compile a small, static Linux binary for production.
-# -----------------------------------------------------------------------------
-FROM golang:1.22-alpine AS builder
-
-WORKDIR /src
-
-COPY --from=deps /go/pkg /go/pkg
-COPY . .
-
-# - CGO_ENABLED=0: produce a fully static binary.
-# - -trimpath/-s/-w: reduce binary size and remove build path/debug symbols.
-RUN CGO_ENABLED=0 GOOS=linux go build \
-    -trimpath \
-    -ldflags="-s -w" \
-    -o /out/grms-server \
-    ./cmd/server
-
-# -----------------------------------------------------------------------------
-# Stage 3: runtime
-# Use a minimal image with only certificates/timezone data and a non-root user.
-# -----------------------------------------------------------------------------
-FROM alpine:3.20 AS runtime
-
-RUN apk add --no-cache ca-certificates tzdata \
-    && addgroup -S app \
-    && adduser -S -G app app
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
 
 WORKDIR /app
 
-COPY --from=builder /out/grms-server /app/grms-server
+COPY requirements.txt /app/requirements.txt
+RUN pip install -r /app/requirements.txt
 
-USER app
+COPY app /app/app
+RUN mkdir -p /app/data
 
-# REST API + DoorLink WebSocket.
-EXPOSE 4000 4001
+CMD ["sh", "-c", "uvicorn app.main:app --host ${APP_HOST:-0.0.0.0} --port ${APP_PORT:-18000}"]
 
-ENTRYPOINT ["./grms-server"]
