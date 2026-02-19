@@ -27,6 +27,7 @@ Copier `.env.example` en `.env` et adapter:
 - `DOORLINK_URL`: URL ws/wss du backend DoorLink.
 - `DOOR_API_TOKEN`: token API porte (si active cote backend).
 - `BLE_REQUIRE_ENCRYPTION=true` pour forcer des flags BLE chiffres cote GATT.
+- `BLE_ADAPTER_ADDRESS`: MAC BLE de l'adaptateur (utile si auto-detection echoue).
 
 ## Execution locale (sans Docker)
 
