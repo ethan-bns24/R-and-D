@@ -232,6 +232,8 @@ class DoorAgent:
         self.doorlink_ws: Any = None
         self.pending_events: deque[dict[str, Any]] = deque()
         self.status_char: Any = None
+        self.gatt: peripheral.Peripheral | None = None
+        self.gatt_task: asyncio.Task[Any] | None = None
 
         self.last_open_ts = 0.0
         self.open_lock = asyncio.Lock()
@@ -815,14 +817,29 @@ class DoorAgent:
         )
         return door
 
+    def _publish_gatt_blocking(self) -> None:
+        if self.gatt is None:
+            return
+        self.gatt.publish()
+
+    def _on_gatt_task_done(self, task: asyncio.Task[Any]) -> None:
+        try:
+            task.result()
+            logging.warning("BLE GATT publish loop exited unexpectedly.")
+        except Exception as exc:
+            logging.exception("BLE GATT publish failed: %s", exc)
+
     async def run(self) -> None:
         self.print_ble_profile()
 
-        gatt = self.make_gatt()
-        gatt.publish()
-        logging.info("BLE service published.")
+        self.gatt = self.make_gatt()
+        # bluezero publish may block depending on version; run it off the asyncio loop.
+        self.gatt_task = asyncio.create_task(asyncio.to_thread(self._publish_gatt_blocking))
+        self.gatt_task.add_done_callback(self._on_gatt_task_done)
+        logging.info("BLE service publish task started.")
 
         asyncio.create_task(self.doorlink_loop())
+        logging.info("DoorLink task started.")
 
         while True:
             await asyncio.sleep(1)
