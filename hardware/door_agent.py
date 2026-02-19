@@ -9,7 +9,9 @@ import inspect
 import json
 import logging
 import os
+import re
 import struct
+import subprocess
 import time
 import uuid
 from collections import defaultdict, deque
@@ -706,36 +708,55 @@ class DoorAgent:
     def _resolve_adapter_address(self) -> str | None:
         if self.cfg.ble_adapter_address:
             return self.cfg.ble_adapter_address.strip()
+
+        # 1) bluezero API
         try:
             raw_adapters = list(adapter.Adapter.available())
             if not raw_adapters:
-                return None
+                raw_adapters = []
 
             for entry in raw_adapters:
-                # Case 1: adapter object exposing `.address`
                 addr = getattr(entry, "address", None)
                 if isinstance(addr, str) and addr:
-                    return addr
+                    return addr.strip()
 
-                # Case 2: direct string address
                 if isinstance(entry, str):
                     text = entry.strip()
-                    if ":" in text and len(text) >= 17:
-                        return text
-
-                    # Case 3: D-Bus object path like "/org/bluez/hci0"
+                    if re.fullmatch(r"[0-9A-Fa-f:]{17}", text):
+                        return text.upper()
                     if text.startswith("/org/bluez/"):
                         try:
                             obj = adapter.Adapter(text)
                             obj_addr = getattr(obj, "address", None)
                             if isinstance(obj_addr, str) and obj_addr:
-                                return obj_addr
+                                return obj_addr.strip()
                         except Exception:
                             continue
-
-            logging.warning("No usable BLE adapter found in available entries: %r", raw_adapters)
         except Exception as exc:
-            logging.warning("Unable to discover BLE adapter automatically: %s", exc)
+            logging.warning("AUTO-DETECT v2: unable to discover BLE adapter via bluezero: %s", exc)
+
+        # 2) fallback via hciconfig output
+        try:
+            out = subprocess.check_output(["hciconfig", "-a"], text=True, stderr=subprocess.STDOUT)
+            match = re.search(r"BD Address:\s*([0-9A-Fa-f:]{17})", out)
+            if match:
+                return match.group(1).upper()
+        except Exception:
+            pass
+
+        # 3) fallback via sysfs (host-mounted in privileged container)
+        try:
+            bt_root = Path("/sys/class/bluetooth")
+            if bt_root.exists():
+                for hci in sorted(bt_root.glob("hci*")):
+                    addr_file = hci / "address"
+                    if addr_file.exists():
+                        addr = addr_file.read_text(encoding="utf-8").strip()
+                        if re.fullmatch(r"[0-9A-Fa-f:]{17}", addr):
+                            return addr.upper()
+        except Exception:
+            pass
+
         return None
 
     def _build_peripheral(self) -> peripheral.Peripheral:
