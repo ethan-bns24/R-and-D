@@ -5,6 +5,7 @@ import asyncio
 import base64
 import hashlib
 import hmac
+import inspect
 import json
 import logging
 import os
@@ -700,8 +701,24 @@ class DoorAgent:
             return [*base_flags, "encrypt-authenticated-write"]
         return base_flags
 
+    def _build_peripheral(self) -> peripheral.Peripheral:
+        ctor = peripheral.Peripheral
+        params = inspect.signature(ctor).parameters
+
+        # bluezero API differs across versions/distributions.
+        if "adapter_addr" in params:
+            return ctor(adapter_addr=None, local_name=self.cfg.ble_local_name, appearance=0)
+        if "adapter_address" in params:
+            return ctor(adapter_address=None, local_name=self.cfg.ble_local_name, appearance=0)
+        if "local_name" in params:
+            try:
+                return ctor(local_name=self.cfg.ble_local_name, appearance=0)
+            except TypeError:
+                return ctor(local_name=self.cfg.ble_local_name)
+        return ctor(self.cfg.ble_local_name)
+
     def make_gatt(self) -> peripheral.Peripheral:
-        door = peripheral.Peripheral(adapter_addr=None, local_name=self.cfg.ble_local_name, appearance=0)
+        door = self._build_peripheral()
         door.add_service(srv_id=1, uuid=SVC_DOORACCESS, primary=True)
 
         door.add_characteristic(
