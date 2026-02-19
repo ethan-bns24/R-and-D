@@ -705,15 +705,35 @@ class DoorAgent:
 
     def _resolve_adapter_address(self) -> str | None:
         if self.cfg.ble_adapter_address:
-            return self.cfg.ble_adapter_address
+            return self.cfg.ble_adapter_address.strip()
         try:
-            adapters = adapter.Adapter.available()
-            if adapters:
-                first = adapters[0]
-                # bluezero objects expose adapter MAC as `.address`
-                addr = getattr(first, "address", None)
+            raw_adapters = list(adapter.Adapter.available())
+            if not raw_adapters:
+                return None
+
+            for entry in raw_adapters:
+                # Case 1: adapter object exposing `.address`
+                addr = getattr(entry, "address", None)
                 if isinstance(addr, str) and addr:
                     return addr
+
+                # Case 2: direct string address
+                if isinstance(entry, str):
+                    text = entry.strip()
+                    if ":" in text and len(text) >= 17:
+                        return text
+
+                    # Case 3: D-Bus object path like "/org/bluez/hci0"
+                    if text.startswith("/org/bluez/"):
+                        try:
+                            obj = adapter.Adapter(text)
+                            obj_addr = getattr(obj, "address", None)
+                            if isinstance(obj_addr, str) and obj_addr:
+                                return obj_addr
+                        except Exception:
+                            continue
+
+            logging.warning("No usable BLE adapter found in available entries: %r", raw_adapters)
         except Exception as exc:
             logging.warning("Unable to discover BLE adapter automatically: %s", exc)
         return None
