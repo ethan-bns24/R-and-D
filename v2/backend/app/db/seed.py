@@ -87,7 +87,7 @@ def seed_demo_data(db: Session, settings: Settings) -> None:
             AccessGrant.user_id == guest.user_id,
             AccessGrant.status == 'active',
         )
-    ).scalar_one_or_none()
+    ).scalars().first()
 
     if active_grant is None:
         now = int(time.time())

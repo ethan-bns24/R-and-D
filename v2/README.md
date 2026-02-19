@@ -16,7 +16,7 @@ docker compose up -d --build
 
 Open:
 - Backoffice UI: `http://localhost:5173`
-- Backend health: `http://localhost:8000/health`
+- Backend health: `http://localhost:18000/health`
 
 Seed credentials:
 - Staff: `staff@example.com` / `staff123`
@@ -25,10 +25,10 @@ Seed credentials:
 ## 2) DoorLink websocket for hardware
 
 Door endpoint:
-- `ws://<backend-host>:8000/doorlink/ws`
+- `ws://<backend-host>:18000/doorlink/ws`
 
 Example for Raspberry Pi host network:
-- `ws://10.42.0.1:8000/doorlink/ws`
+- `ws://10.42.0.1:18000/doorlink/ws`
 
 When a door connects, `GET /v1/backoffice/doors` shows `connected=true`.
 The React dashboard polls that endpoint and highlights connected rooms/doors.
@@ -38,7 +38,7 @@ The React dashboard polls that endpoint and highlights connected rooms/doors.
 ```bash
 cd v2/hardware
 cp .env.example .env
-# set DOORLINK_URL=ws://10.42.0.1:8000/doorlink/ws
+# set DOORLINK_URL=ws://10.42.0.1:18000/doorlink/ws
 # set BLE_ADAPTER_ADDRESS if needed
 docker compose -f docker-compose.rpi.yml up -d --build
 docker compose -f docker-compose.rpi.yml logs -f
@@ -78,4 +78,5 @@ BLE GATT DoorAccess:
 - ControlPoint: `C0DE0002-3F2A-4E9B-9B1E-0A8C2D3A4B5C`
 - Status: `C0DE0003-3F2A-4E9B-9B1E-0A8C2D3A4B5C`
 - Info: `C0DE0004-3F2A-4E9B-9B1E-0A8C2D3A4B5C`
+
 

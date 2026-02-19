@@ -236,7 +236,7 @@ export default function App() {
                 <td>{g.user_email}</td>
                 <td>{g.room_id}</td>
                 <td>{g.door_id.slice(0, 8)}...</td>
-                <td>{fmtTs(g.from_ts)} -> {fmtTs(g.to_ts)}</td>
+                <td>{fmtTs(g.from_ts)} {'->'} {fmtTs(g.to_ts)}</td>
                 <td>{g.status}</td>
                 <td>
                   <button
