@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ninja-build \
     libcairo2-dev \
     libdbus-1-dev \
+    libdbus-glib-1-dev \
     libffi-dev \
     libgirepository1.0-dev \
     libglib2.0-dev \
@@ -39,6 +40,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     dbus \
     libglib2.0-0 \
     libdbus-1-3 \
+    libdbus-glib-1-2 \
     libcairo2 \
     libgirepository-1.0-1 \
     gir1.2-glib-2.0 \
