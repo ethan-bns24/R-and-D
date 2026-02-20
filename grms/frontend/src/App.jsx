@@ -76,6 +76,22 @@ export default function App() {
     setTimeout(() => setToasts((value) => value.filter((item) => item.id !== id)), 2800)
   }
 
+  const resetSession = (message = 'Session invalide ou expiree. Merci de vous reconnecter.') => {
+    localStorage.removeItem('staff_token')
+    setTokenState('')
+    setToken('')
+    setAuthError(message)
+    setStaff([])
+    setClients([])
+    setRooms([])
+    setDoors([])
+    setGrants([])
+    setEvents([])
+    notify('error', message)
+  }
+
+  const isUnauthorized = (err) => err?.response?.status === 401
+
   const refresh = async () => {
     if (lock.current) return
     lock.current = true
@@ -95,6 +111,10 @@ export default function App() {
       setGrants(grantData)
       setEvents(eventData)
     } catch (err) {
+      if (isUnauthorized(err)) {
+        resetSession()
+        return
+      }
       const now = Date.now()
       if (now - lastSyncToastTs.current > 20000) {
         notify('error', parseApiError(err, 'Erreur de synchronisation avec le backend'))
@@ -141,6 +161,10 @@ export default function App() {
     try {
       await fn()
     } catch (err) {
+      if (isUnauthorized(err)) {
+        resetSession()
+        return
+      }
       notify('error', parseApiError(err, failureMessage))
     }
   }
