@@ -3,6 +3,7 @@
 Service Python pour la porte:
 - serveur BLE GATT (DoorAccess)
 - client WebSocket DoorLink vers le backend GRMS
+- pilotage GPIO via `RPi.GPIO` (auto installe sur Raspberry Pi ARM)
 
 ## Configuration
 
