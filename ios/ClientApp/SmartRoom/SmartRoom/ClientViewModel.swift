@@ -29,6 +29,8 @@ final class ClientViewModel: ObservableObject {
     @Published var selectedDoorID: String?
     @Published var doorRealtimeStatuses: [DoorRealtimeStatus] = []
     @Published var autoOpenCooldownRemaining: Int = 0
+    @Published var autoOpenArmingRemaining: Int = 0
+    @Published var autoOpenArmingDoorName: String?
 
     @Published var scannedDevices: [BleManager.ScannedDevice] = []
     @Published var isBleScanning: Bool = false
@@ -46,11 +48,14 @@ final class ClientViewModel: ObservableObject {
 
     // Seuils durcis pour eviter les ouvertures a distance.
     private let autoOpenCooldownSeconds: TimeInterval = 30
+    private let autoOpenArmingSeconds: TimeInterval = 5
     private let autoOpenMaxDistanceMeters: Double = 0.30
     private let autoOpenMinRSSI: Int = -50
     private let autoOpenTxPowerAt1m: Double = -59
     private let autoOpenPathLossExponent: Double = 2.0
     private var nextAutoOpenAllowedAt: Date = .distantPast
+    private var autoOpenArmingDeadline: Date?
+    private var autoOpenArmingDeviceID: UUID?
 
     init() {
         bleManager.$scannedDevices
@@ -88,6 +93,7 @@ final class ClientViewModel: ObservableObject {
             .autoconnect()
             .sink { [weak self] _ in
                 self?.refreshCooldownRemaining()
+                self?.refreshAutoOpenArmingRemaining()
             }
             .store(in: &cancellables)
 
@@ -101,7 +107,7 @@ final class ClientViewModel: ObservableObject {
 
     var autoOpenRuleLabel: String {
         let distance = String(format: "%.2f", autoOpenMaxDistanceMeters)
-        return "Auto-ouverture: RSSI >= \(autoOpenMinRSSI) dBm et distance <= \(distance) m"
+        return "Auto-ouverture: RSSI >= \(autoOpenMinRSSI) dBm, distance <= \(distance) m, stabilite \(Int(autoOpenArmingSeconds))s"
     }
 
     var nearestDetectedDoor: DoorRealtimeStatus? {
@@ -143,6 +149,7 @@ final class ClientViewModel: ObservableObject {
 
         nextAutoOpenAllowedAt = .distantPast
         autoOpenCooldownRemaining = 0
+        clearAutoOpenArming()
 
         bleManager.setRegisteredDoors(doorIDs: [], bleIDs: [])
         statusMessage = "Deconnecte"
@@ -190,6 +197,8 @@ final class ClientViewModel: ObservableObject {
     }
 
     private func openDoor(autoTriggered: Bool, detectedDevice: BleManager.ScannedDevice?) {
+        clearAutoOpenArming()
+
         guard let keyID,
               let secretBaseB64 else {
             statusMessage = "Selection grant/door invalide"
@@ -331,20 +340,49 @@ final class ClientViewModel: ObservableObject {
 
     private func handleAutoOpen(devices: [BleManager.ScannedDevice]) {
         refreshCooldownRemaining()
+        refreshAutoOpenArmingRemaining()
 
-        guard isAuthenticated else { return }
-        guard keyID != nil, secretBaseB64 != nil else { return }
-        guard !isBusy else { return }
-        guard autoOpenCooldownRemaining == 0 else { return }
+        guard isAuthenticated else {
+            clearAutoOpenArming()
+            return
+        }
+        guard keyID != nil, secretBaseB64 != nil else {
+            clearAutoOpenArming()
+            return
+        }
+        guard !isBusy else {
+            clearAutoOpenArming()
+            return
+        }
+        guard autoOpenCooldownRemaining == 0 else {
+            clearAutoOpenArming()
+            return
+        }
 
         let eligibleDevices = devices
             .filter { $0.isRegistered }
             .sorted { $0.rssi > $1.rssi }
 
         guard let candidate = eligibleDevices.first(where: { isWithinAutoOpenRange($0) && resolveGrantFromDetectedDoor($0) != nil }) else {
+            clearAutoOpenArming()
             return
         }
 
+        if autoOpenArmingDeviceID != candidate.id {
+            beginAutoOpenArming(with: candidate)
+            return
+        }
+
+        guard let deadline = autoOpenArmingDeadline else {
+            beginAutoOpenArming(with: candidate)
+            return
+        }
+
+        if Date() < deadline {
+            return
+        }
+
+        clearAutoOpenArming()
         nextAutoOpenAllowedAt = Date().addingTimeInterval(autoOpenCooldownSeconds)
         refreshCooldownRemaining()
         openDoor(autoTriggered: true, detectedDevice: candidate)
@@ -353,6 +391,31 @@ final class ClientViewModel: ObservableObject {
     private func refreshCooldownRemaining() {
         let remaining = max(0, Int(ceil(nextAutoOpenAllowedAt.timeIntervalSinceNow)))
         autoOpenCooldownRemaining = remaining
+    }
+
+    private func beginAutoOpenArming(with device: BleManager.ScannedDevice) {
+        autoOpenArmingDeviceID = device.id
+        autoOpenArmingDoorName = device.name
+        autoOpenArmingDeadline = Date().addingTimeInterval(autoOpenArmingSeconds)
+        refreshAutoOpenArmingRemaining()
+        statusMessage = "Conditions reunies pour \(device.name). Verification stabilite 5s..."
+    }
+
+    private func clearAutoOpenArming() {
+        autoOpenArmingDeviceID = nil
+        autoOpenArmingDoorName = nil
+        autoOpenArmingDeadline = nil
+        autoOpenArmingRemaining = 0
+    }
+
+    private func refreshAutoOpenArmingRemaining() {
+        guard let deadline = autoOpenArmingDeadline else {
+            autoOpenArmingRemaining = 0
+            return
+        }
+
+        let remaining = max(0, Int(ceil(deadline.timeIntervalSinceNow)))
+        autoOpenArmingRemaining = remaining
     }
 
     private func isWithinAutoOpenRange(_ device: BleManager.ScannedDevice) -> Bool {

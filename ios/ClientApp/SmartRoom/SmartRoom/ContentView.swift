@@ -6,15 +6,10 @@ struct ContentView: View {
     var body: some View {
         NavigationView {
             ZStack {
-                LinearGradient(
-                    colors: [Color(red: 0.06, green: 0.09, blue: 0.16), Color(red: 0.10, green: 0.18, blue: 0.26)],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
-                .ignoresSafeArea()
+                backgroundLayer
 
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 18) {
+                ScrollView(showsIndicators: false) {
+                    VStack(alignment: .leading, spacing: 16) {
                         if vm.isAuthenticated {
                             dashboardView
                         } else {
@@ -28,15 +23,48 @@ struct ContentView: View {
         }
     }
 
+    private var backgroundLayer: some View {
+        ZStack {
+            LinearGradient(
+                colors: [
+                    Color(red: 0.04, green: 0.07, blue: 0.12),
+                    Color(red: 0.08, green: 0.15, blue: 0.23),
+                    Color(red: 0.11, green: 0.25, blue: 0.35)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            .ignoresSafeArea()
+
+            Circle()
+                .fill(Color.white.opacity(0.08))
+                .frame(width: 220, height: 220)
+                .offset(x: -120, y: -280)
+                .blur(radius: 2)
+
+            Circle()
+                .fill(Color.cyan.opacity(0.12))
+                .frame(width: 180, height: 180)
+                .offset(x: 130, y: -180)
+                .blur(radius: 6)
+
+            Circle()
+                .fill(Color.blue.opacity(0.10))
+                .frame(width: 260, height: 260)
+                .offset(x: 140, y: 360)
+                .blur(radius: 12)
+        }
+    }
+
     private var loginView: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 16) {
             Text("Door Access")
-                .font(.system(size: 34, weight: .heavy, design: .rounded))
+                .font(.system(size: 36, weight: .heavy, design: .rounded))
                 .foregroundColor(.white)
 
-            Text("Connectez-vous pour activer le scan BLE automatique et l'ouverture de proximite.")
+            Text("Connexion securisee puis ouverture automatique par proximite BLE.")
                 .font(.subheadline)
-                .foregroundColor(.white.opacity(0.85))
+                .foregroundColor(.white.opacity(0.82))
 
             VStack(alignment: .leading, spacing: 12) {
                 Text("Connexion")
@@ -61,7 +89,7 @@ struct ContentView: View {
                     }
                 }
                 .buttonStyle(.borderedProminent)
-                .tint(Color(red: 0.10, green: 0.45, blue: 0.90))
+                .tint(Color(red: 0.06, green: 0.45, blue: 0.92))
                 .disabled(vm.isBusy)
 
                 Text(vm.statusMessage.isEmpty ? " " : vm.statusMessage)
@@ -71,130 +99,145 @@ struct ContentView: View {
             .padding(16)
             .background(Color.white)
             .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .shadow(color: .black.opacity(0.18), radius: 12, x: 0, y: 8)
 
-            Text("Mode auto: scan continu, ouverture unique si proche, cooldown 30s.")
+            Text("Mode auto: conditions BLE + verification 5s + ouverture + cooldown 30s")
                 .font(.caption)
-                .foregroundColor(.white.opacity(0.80))
+                .foregroundColor(.white.opacity(0.82))
         }
+        .padding(.top, 30)
     }
 
     private var dashboardView: some View {
         VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Dashboard")
-                        .font(.system(size: 30, weight: .heavy, design: .rounded))
-                        .foregroundColor(.white)
-                    Text("Etat BLE et acces en temps reel")
-                        .font(.subheadline)
-                        .foregroundColor(.white.opacity(0.85))
-                }
-                Spacer()
-                VStack(spacing: 8) {
-                    Button("Refresh") {
-                        Task { await vm.refreshGrants() }
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(.white)
-                    .disabled(vm.isBusy)
-
-                    Button("Logout") {
-                        vm.logout()
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(Color(red: 0.73, green: 0.16, blue: 0.23))
-                }
-            }
-
-            statusStrip
-            realtimeFocusCard
-            grantsDoorList
-            nearbyScanList
-            diagnosticCard
+            headerBar
+            heroStatusCard
+            realtimeConditionsCard
+            doorsGrid
+            nearbyScanCard
+            toolsCard
         }
     }
 
-    private var statusStrip: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                statusChip(
-                    title: vm.isBleScanning ? "Scan actif" : "Scan arrete",
-                    color: vm.isBleScanning ? .green : .orange
-                )
-                statusChip(
-                    title: vm.autoOpenCooldownRemaining > 0 ? "Cooldown \(vm.autoOpenCooldownRemaining)s" : "Auto pret",
-                    color: vm.autoOpenCooldownRemaining > 0 ? .orange : .green
-                )
+    private var headerBar: some View {
+        HStack(alignment: .top) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Dashboard")
+                    .font(.system(size: 30, weight: .heavy, design: .rounded))
+                    .foregroundColor(.white)
+                Text("Etat live des portes autorisees")
+                    .font(.subheadline)
+                    .foregroundColor(.white.opacity(0.82))
             }
 
-            Text("Bluetooth: \(vm.bleCentralStateLabel)")
-                .font(.caption)
+            Spacer()
+
+            VStack(spacing: 8) {
+                Button("Refresh") {
+                    Task { await vm.refreshGrants() }
+                }
+                .buttonStyle(.bordered)
+                .tint(.white)
+                .disabled(vm.isBusy)
+
+                Button("Logout") {
+                    vm.logout()
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Color(red: 0.78, green: 0.20, blue: 0.26))
+            }
+        }
+    }
+
+    private var heroStatusCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text(autoStateTitle)
+                    .font(.title3.weight(.bold))
+                Spacer()
+                statusCapsule(text: vm.isBleScanning ? "Scan actif" : "Scan arrete", color: vm.isBleScanning ? .green : .orange)
+            }
+
+            Text(autoStateSubtitle)
+                .font(.subheadline)
                 .foregroundColor(.secondary)
+
+            HStack(spacing: 8) {
+                statusCapsule(text: "Bluetooth: \(vm.bleCentralStateLabel)", color: .blue)
+                if vm.autoOpenCooldownRemaining > 0 {
+                    statusCapsule(text: "Cooldown \(vm.autoOpenCooldownRemaining)s", color: .orange)
+                } else if vm.autoOpenArmingRemaining > 0 {
+                    statusCapsule(text: "Verification \(vm.autoOpenArmingRemaining)s", color: .purple)
+                } else {
+                    statusCapsule(text: "Auto pret", color: .green)
+                }
+            }
+
             Text(vm.autoOpenRuleLabel)
                 .font(.caption)
                 .foregroundColor(.secondary)
+
             Text(vm.statusMessage)
                 .font(.caption)
                 .foregroundColor(.primary)
         }
-        .padding(14)
-        .background(Color.white)
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .padding(16)
+        .background(
+            LinearGradient(
+                colors: [Color.white, Color(red: 0.96, green: 0.98, blue: 1.0)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .shadow(color: .black.opacity(0.12), radius: 10, x: 0, y: 8)
     }
 
-    private var realtimeFocusCard: some View {
+    private var realtimeConditionsCard: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Proximite en temps reel")
+            Text("Proximite temps reel")
                 .font(.headline)
 
             if let nearest = vm.nearestDetectedDoor {
-                Text("Porte detectee: \(nearest.bleID)")
-                    .font(.subheadline)
-                    .fontWeight(.semibold)
-
-                HStack(spacing: 12) {
-                    metricPill(label: "Signal", value: "\(nearest.rssi ?? -127) dBm")
-                    metricPill(
-                        label: "Distance",
+                HStack(spacing: 10) {
+                    metricTile(title: "Porte", value: nearest.bleID)
+                    metricTile(title: "Signal", value: "\(nearest.rssi ?? -127) dBm")
+                    metricTile(
+                        title: "Distance",
                         value: nearest.estimatedDistanceMeters.map { String(format: "%.2f m", $0) } ?? "-"
                     )
                 }
 
-                HStack(spacing: 8) {
-                    statusChip(
-                        title: nearest.isCloseEnoughToOpen ? "Assez proche: OUI" : "Assez proche: NON",
-                        color: nearest.isCloseEnoughToOpen ? .green : .orange
-                    )
-                    if let seen = nearest.lastSeen {
-                        Text("Derniere vue: \(seen.formatted(date: .omitted, time: .standard))")
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
-                    }
-                }
+                conditionRow(title: "Porte autorisee detectee", isOn: nearest.isDetected)
+                conditionRow(title: "Proximite validee (RSSI + distance)", isOn: nearest.isCloseEnoughToOpen)
+                conditionRow(title: "Stabilite 5 secondes", isOn: vm.autoOpenArmingRemaining == 0 && nearest.isCloseEnoughToOpen)
             } else {
-                Text("Aucune porte autorisee detectee a proximite pour le moment.")
+                Text("Aucune porte autorisee detectee pour le moment.")
                     .font(.subheadline)
                     .foregroundColor(.secondary)
+                conditionRow(title: "Porte autorisee detectee", isOn: false)
+                conditionRow(title: "Proximite validee (RSSI + distance)", isOn: false)
+                conditionRow(title: "Stabilite 5 secondes", isOn: false)
             }
         }
-        .padding(14)
+        .padding(16)
         .background(Color.white)
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
 
-    private var grantsDoorList: some View {
+    private var doorsGrid: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Text("Portes autorisees")
                     .font(.headline)
                 Spacer()
                 Text("\(vm.doorRealtimeStatuses.count)")
-                    .font(.caption)
+                    .font(.caption.weight(.semibold))
                     .foregroundColor(.secondary)
             }
 
             if vm.doorRealtimeStatuses.isEmpty {
-                Text("Aucune porte dans les grants actifs")
+                Text("Aucune porte disponible")
                     .font(.subheadline)
                     .foregroundColor(.secondary)
             } else {
@@ -203,12 +246,12 @@ struct ContentView: View {
                 }
             }
         }
-        .padding(14)
+        .padding(16)
         .background(Color.white)
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
 
-    private var nearbyScanList: some View {
+    private var nearbyScanCard: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Scan BLE brut")
                 .font(.headline)
@@ -218,12 +261,11 @@ struct ContentView: View {
                     .font(.subheadline)
                     .foregroundColor(.secondary)
             } else {
-                ForEach(Array(vm.scannedDevices.prefix(12))) { device in
+                ForEach(Array(vm.scannedDevices.prefix(10))) { device in
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(device.name)
-                                .font(.subheadline)
-                                .fontWeight(.medium)
+                                .font(.subheadline.weight(.medium))
                             Text(device.identifier)
                                 .font(.caption2)
                                 .foregroundColor(.secondary)
@@ -232,7 +274,7 @@ struct ContentView: View {
                         VStack(alignment: .trailing, spacing: 2) {
                             Text("\(device.rssi) dBm")
                                 .font(.subheadline.monospacedDigit())
-                            Text(device.isRegistered ? "enregistre" : "inconnu")
+                            Text(device.isRegistered ? "autorise" : "inconnu")
                                 .font(.caption2)
                                 .foregroundColor(device.isRegistered ? .green : .secondary)
                         }
@@ -241,53 +283,92 @@ struct ContentView: View {
                 }
             }
         }
-        .padding(14)
+        .padding(16)
         .background(Color.white)
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
 
-    private var diagnosticCard: some View {
+    private var toolsCard: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Button("Tester emission BLE") {
-                    vm.runBleEmitterTest()
-                }
-                .buttonStyle(.bordered)
-                .disabled(vm.isBusy)
-
-                Text(vm.bleEmitterTestStatus)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+            Button("Tester emission BLE") {
+                vm.runBleEmitterTest()
             }
+            .buttonStyle(.bordered)
+            .disabled(vm.isBusy)
+
+            Text(vm.bleEmitterTestStatus)
+                .font(.caption)
+                .foregroundColor(.secondary)
         }
-        .padding(14)
+        .padding(16)
         .background(Color.white)
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
 
-    private func statusChip(title: String, color: Color) -> some View {
-        Text(title)
+    private var autoStateTitle: String {
+        if vm.autoOpenCooldownRemaining > 0 {
+            return "Cooldown actif"
+        }
+        if vm.autoOpenArmingRemaining > 0 {
+            return "Verification proximite"
+        }
+        if let nearest = vm.nearestDetectedDoor, nearest.isCloseEnoughToOpen {
+            return "Pret pour ouverture"
+        }
+        return "En attente de proximite"
+    }
+
+    private var autoStateSubtitle: String {
+        if vm.autoOpenCooldownRemaining > 0 {
+            return "Nouvelle ouverture automatique possible dans \(vm.autoOpenCooldownRemaining) secondes."
+        }
+        if vm.autoOpenArmingRemaining > 0 {
+            let door = vm.autoOpenArmingDoorName ?? "porte"
+            return "Conditions reunies pour \(door), attente de stabilite: \(vm.autoOpenArmingRemaining)s"
+        }
+        if let nearest = vm.nearestDetectedDoor {
+            return nearest.isCloseEnoughToOpen
+                ? "Signal suffisant detecte. Verification de stabilite avant ouverture."
+                : "Porte detectee mais encore trop loin."
+        }
+        return "Approchez-vous d'une porte autorisee pour declencher l'ouverture auto."
+    }
+
+    private func statusCapsule(text: String, color: Color) -> some View {
+        Text(text)
             .font(.caption.weight(.semibold))
             .foregroundColor(color)
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
-            .background(color.opacity(0.12))
+            .background(color.opacity(0.13))
             .clipShape(Capsule())
     }
 
-    private func metricPill(label: String, value: String) -> some View {
+    private func metricTile(title: String, value: String) -> some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(label)
+            Text(title)
                 .font(.caption2)
                 .foregroundColor(.secondary)
             Text(value)
                 .font(.subheadline.monospacedDigit())
-                .fontWeight(.semibold)
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
         .background(Color(red: 0.95, green: 0.97, blue: 1.0))
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
+    private func conditionRow(title: String, isOn: Bool) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: isOn ? "checkmark.circle.fill" : "xmark.circle")
+                .foregroundColor(isOn ? .green : .orange)
+            Text(title)
+                .font(.subheadline)
+                .foregroundColor(.primary)
+            Spacer()
+        }
     }
 }
 
@@ -303,11 +384,10 @@ private struct DoorAccessCard: View {
                     Text("Door: \(door.doorID)")
                         .font(.caption2)
                         .foregroundColor(.secondary)
-                    Text("Grant: \(door.grantID)")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
                 }
+
                 Spacer()
+
                 Text(door.isCloseEnoughToOpen ? "PRET" : "ATTENTE")
                     .font(.caption.weight(.bold))
                     .foregroundColor(door.isCloseEnoughToOpen ? .green : .orange)
@@ -317,7 +397,7 @@ private struct DoorAccessCard: View {
                     .clipShape(Capsule())
             }
 
-            HStack(spacing: 14) {
+            HStack(spacing: 12) {
                 Text("Signal: \(door.rssi.map { "\($0) dBm" } ?? "-")")
                     .font(.caption)
                 Text("Distance: \(door.estimatedDistanceMeters.map { String(format: "%.2f m", $0) } ?? "-")")
@@ -336,11 +416,16 @@ private struct DoorAccessCard: View {
             }
         }
         .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
         .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(door.isCloseEnoughToOpen ? Color.green.opacity(0.08) : Color.gray.opacity(0.08))
+            LinearGradient(
+                colors: door.isCloseEnoughToOpen
+                    ? [Color.green.opacity(0.12), Color.white]
+                    : [Color.gray.opacity(0.12), Color.white],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
         )
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 }
 
