@@ -23,7 +23,10 @@ from typing import Any
 import websockets
 from bluezero import adapter, peripheral
 
-import RPi.GPIO as GPIO
+try:
+    import RPi.GPIO as GPIO
+except:
+    GPIO = None
 
 UUID_NIL = "00000000-0000-0000-0000-000000000000"
 DEFAULT_DOOR_ID = "1a7d2ade-c63e-40f3-ace2-7798e752ee45"
@@ -99,6 +102,7 @@ class Config:
     ble_nearby_stale_sec: int
     ble_gatt_debug_logs: bool
     ble_gatt_watch_sec: int
+    ble_controlpoint_allow_wwr: bool
 
     doorlink_url: str
     door_api_token: str
@@ -133,6 +137,7 @@ class Config:
             ble_nearby_stale_sec=env_int("BLE_NEARBY_STALE_SEC", 30),
             ble_gatt_debug_logs=env_bool("BLE_GATT_DEBUG_LOGS", True),
             ble_gatt_watch_sec=env_int("BLE_GATT_WATCH_SEC", 1),
+            ble_controlpoint_allow_wwr=env_bool("BLE_CONTROLPOINT_ALLOW_WWR", False),
             doorlink_url=os.getenv("DOORLINK_URL", "ws://127.0.0.1:18000/doorlink/ws"),
             door_api_token=os.getenv("DOOR_API_TOKEN", ""),
             fw_version=os.getenv("FW_VERSION", "1.0.0"),
@@ -519,7 +524,8 @@ class DoorAgent:
         print(f"proto_version   : {self.cfg.proto_version}")
         print(f"local_name      : {self.cfg.ble_local_name}")
         print(f"service_uuid    : {SVC_DOORACCESS}")
-        print(f"controlpoint    : {CHAR_CONTROLPOINT} (WRITE)")
+        cp_mode = "WRITE(+WNR)" if self.cfg.ble_controlpoint_allow_wwr else "WRITE"
+        print(f"controlpoint    : {CHAR_CONTROLPOINT} ({cp_mode})")
         print(f"status          : {CHAR_STATUS} (NOTIFY)")
         print(f"info            : {CHAR_INFO} (READ)")
         print(f"require_encrypt : {self.cfg.ble_require_encryption}")
@@ -884,11 +890,49 @@ class DoorAgent:
             await asyncio.sleep(max(1, self.cfg.ble_gatt_watch_sec))
 
     # ---------- BLE ControlPoint ----------
-    def on_controlpoint_write(self, value: bytes, _options: Any = None) -> None:
-        raw = bytes(value)
+    @staticmethod
+    def _bytes_from_gatt_value(value: Any) -> bytes:
+        if value is None:
+            return b""
+        if isinstance(value, bytes):
+            return value
+        if isinstance(value, bytearray):
+            return bytes(value)
+        if isinstance(value, memoryview):
+            return value.tobytes()
+        if isinstance(value, str):
+            # Avoid converting arbitrary text (e.g. D-Bus path) to payload bytes.
+            return b""
+        try:
+            return bytes(value)
+        except Exception:
+            return b""
+
+    def on_controlpoint_write(self, *args: Any, **kwargs: Any) -> None:
+        options = kwargs.get("options")
+        value = kwargs.get("value")
+        if value is None and args:
+            value = args[0]
+            if len(args) >= 2 and options is None:
+                options = args[1]
+
+        raw = self._bytes_from_gatt_value(value)
+
+        # bluezero variants may pass (path, value, options) or other tuples.
+        if not raw and args:
+            for item in args:
+                candidate = self._bytes_from_gatt_value(item)
+                if candidate:
+                    raw = candidate
+                    break
+
+        if not raw:
+            logging.warning("[GATT] ControlPoint write callback without payload args=%r kwargs=%r", args, kwargs)
+            return
+
         if self.cfg.ble_gatt_debug_logs:
-            logging.info("[GATT] ControlPoint write len=%s raw=%s options=%s", len(raw), raw.hex(), _options)
-        self.loop.call_soon_threadsafe(lambda: asyncio.create_task(self.handle_controlpoint(raw, _options)))
+            logging.info("[GATT] ControlPoint write len=%s raw=%s options=%s", len(raw), raw.hex(), options)
+        self.loop.call_soon_threadsafe(lambda: asyncio.create_task(self.handle_controlpoint(raw, options)))
 
     async def handle_controlpoint(self, raw: bytes, options: Any = None) -> None:
         try:
@@ -1021,6 +1065,14 @@ class DoorAgent:
             return [*base_flags, "encrypt-authenticated-write"]
         return base_flags
 
+    def _controlpoint_flags(self) -> list[str]:
+        # Default to "write" (with response) to align with iOS `.withResponse`.
+        # Enable WRITE WITHOUT RESPONSE only when explicitly requested.
+        base = ["write"]
+        if self.cfg.ble_controlpoint_allow_wwr:
+            base.append("write-without-response")
+        return self._characteristic_flags(base)
+
     def _resolve_adapter_address(self) -> str | None:
         if self.cfg.ble_adapter_address:
             return self.cfg.ble_adapter_address.strip()
@@ -1126,7 +1178,7 @@ class DoorAgent:
             uuid=CHAR_CONTROLPOINT,
             value=b"",
             notifying=False,
-            flags=self._characteristic_flags(["write", "write-without-response"]),
+            flags=self._controlpoint_flags(),
             write_callback=self.on_controlpoint_write,
         )
         return door
@@ -1204,4 +1256,3 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         pass
-

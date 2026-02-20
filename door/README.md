@@ -14,6 +14,7 @@ Si besoin, modifie directement ces champs dans le compose:
 - `LED_GPIO` (LED ouverture)
 - `LED_CLOSED_GPIO` (LED porte fermee, pin 27 par defaut)
 - `BLE_GATT_DEBUG_LOGS` / `BLE_GATT_WATCH_SEC` (logs detailles connexion GATT)
+- `BLE_CONTROLPOINT_ALLOW_WWR` (`false` par defaut: ControlPoint en WRITE avec reponse)
 - `BLE_NEARBY_SCAN` / `BLE_NEARBY_TABLE_REFRESH_SEC` / `BLE_NEARBY_STALE_SEC` (tableau scan BLE autour)
   - `BLE_NEARBY_SCAN` est desactive par defaut
 

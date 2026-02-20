@@ -17,6 +17,7 @@
       BLE_ADAPTER_ADDRESS: "D8:3A:DD:E2:08:99"
       BLE_GATT_DEBUG_LOGS: "true"
       BLE_GATT_WATCH_SEC: "1"
+      BLE_CONTROLPOINT_ALLOW_WWR: "false"
       BLE_NEARBY_SCAN: "false"
       BLE_NEARBY_TABLE_REFRESH_SEC: "1"
       BLE_NEARBY_SNAPSHOT_SEC: "8"
@@ -34,4 +35,3 @@
     volumes:
       - ./data:/data
       - /var/run/dbus:/var/run/dbus
-
