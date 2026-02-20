@@ -11,6 +11,7 @@ Si besoin, modifie directement ces champs dans le compose:
 - `DOOR_ID`
 - `DOORLINK_URL` (ex: `ws://10.42.0.1:18000/doorlink/ws`)
 - `BLE_ADAPTER_ADDRESS`
+- `BLE_NEARBY_SCAN` / `BLE_NEARBY_SNAPSHOT_SEC` / `BLE_NEARBY_STALE_SEC` (scan BLE autour en temps reel)
 
 ## Lancer sur Raspberry Pi
 

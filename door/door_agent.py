@@ -96,6 +96,9 @@ class Config:
     ble_local_name: str
     ble_require_encryption: bool
     ble_adapter_address: str | None
+    ble_nearby_scan: bool
+    ble_nearby_snapshot_sec: int
+    ble_nearby_stale_sec: int
 
     doorlink_url: str
     door_api_token: str
@@ -123,6 +126,9 @@ class Config:
             ble_local_name=ble_name,
             ble_require_encryption=env_bool("BLE_REQUIRE_ENCRYPTION", False),
             ble_adapter_address=os.getenv("BLE_ADAPTER_ADDRESS"),
+            ble_nearby_scan=env_bool("BLE_NEARBY_SCAN", True),
+            ble_nearby_snapshot_sec=env_int("BLE_NEARBY_SNAPSHOT_SEC", 8),
+            ble_nearby_stale_sec=env_int("BLE_NEARBY_STALE_SEC", 30),
             doorlink_url=os.getenv("DOORLINK_URL", "ws://127.0.0.1:18000/doorlink/ws"),
             door_api_token=os.getenv("DOOR_API_TOKEN", ""),
             fw_version=os.getenv("FW_VERSION", "1.0.0"),
@@ -222,6 +228,167 @@ class StateStore:
         self.path.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
 
 
+class NearbyBLEScanner:
+    def __init__(
+        self,
+        *,
+        adapter_address: str | None,
+        snapshot_sec: int,
+        stale_sec: int,
+    ) -> None:
+        self.adapter_address = adapter_address
+        self.snapshot_sec = max(2, snapshot_sec)
+        self.stale_sec = max(5, stale_sec)
+        self._stop = False
+        self.proc: asyncio.subprocess.Process | None = None
+        self.devices: dict[str, dict[str, Any]] = {}
+        self._last_snapshot = 0.0
+
+    @staticmethod
+    def _strip_ansi(line: str) -> str:
+        return re.sub(r"\x1B\[[0-9;]*[A-Za-z]", "", line).strip()
+
+    def _upsert_device(self, mac: str, *, name: str | None = None, rssi: int | None = None) -> None:
+        now = time.time()
+        item = self.devices.get(mac, {"mac": mac, "name": "unknown", "rssi": None, "last_seen": 0.0})
+        if name:
+            item["name"] = name
+        if rssi is not None:
+            item["rssi"] = rssi
+        item["last_seen"] = now
+        self.devices[mac] = item
+        logging.info("BLE nearby: mac=%s name=%s rssi=%s", mac, item["name"], item["rssi"])
+
+    def _handle_line(self, raw_line: str) -> None:
+        line = self._strip_ansi(raw_line)
+        if "Device " not in line:
+            return
+        is_new = "[NEW]" in line
+        is_change = "[CHG]" in line
+        is_del = "[DEL]" in line
+
+        if is_del:
+            match_del = re.search(r"Device\s+([0-9A-Fa-f:]{17})", line)
+            if match_del:
+                mac = match_del.group(1).upper()
+                self.devices.pop(mac, None)
+                logging.info("BLE nearby: device removed mac=%s", mac)
+            return
+
+        match_rssi = re.search(r"Device\s+([0-9A-Fa-f:]{17})\s+RSSI:\s*(-?\d+)", line)
+        if match_rssi:
+            self._upsert_device(match_rssi.group(1).upper(), rssi=int(match_rssi.group(2)))
+            return
+
+        match_name = re.search(r"Device\s+([0-9A-Fa-f:]{17})\s+Name:\s+(.+)$", line)
+        if match_name:
+            self._upsert_device(match_name.group(1).upper(), name=match_name.group(2).strip())
+            return
+
+        match_alias = re.search(r"Device\s+([0-9A-Fa-f:]{17})\s+Alias:\s+(.+)$", line)
+        if match_alias:
+            self._upsert_device(match_alias.group(1).upper(), name=match_alias.group(2).strip())
+            return
+
+        match_seen = re.search(r"Device\s+([0-9A-Fa-f:]{17})(?:\s+(.+))?$", line)
+        if match_seen:
+            mac = match_seen.group(1).upper()
+            suffix = (match_seen.group(2) or "").strip()
+            if is_new and suffix and ":" not in suffix:
+                self._upsert_device(mac, name=suffix)
+            elif is_new or is_change:
+                self._upsert_device(mac)
+
+    def _print_snapshot_if_due(self) -> None:
+        now = time.time()
+        if (now - self._last_snapshot) < self.snapshot_sec:
+            return
+        self._last_snapshot = now
+
+        active = []
+        for item in self.devices.values():
+            if (now - float(item["last_seen"])) <= self.stale_sec:
+                active.append(item)
+
+        active.sort(key=lambda x: (x["rssi"] is None, -(x["rssi"] or -999)))
+        logging.info("BLE nearby snapshot: %s device(s) seen in last %ss", len(active), self.stale_sec)
+        for item in active:
+            age = int(now - float(item["last_seen"]))
+            logging.info(
+                "  - %s | %s | rssi=%s | seen=%ss",
+                item["mac"],
+                item["name"],
+                item["rssi"],
+                age,
+            )
+
+    async def _send_cmd(self, cmd: str) -> None:
+        if self.proc is None or self.proc.stdin is None:
+            return
+        self.proc.stdin.write((cmd + "\n").encode("utf-8"))
+        await self.proc.stdin.drain()
+
+    async def _run_once(self) -> None:
+        self.proc = await asyncio.create_subprocess_exec(
+            "bluetoothctl",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+
+        if self.adapter_address:
+            await self._send_cmd(f"select {self.adapter_address}")
+        await self._send_cmd("scan on")
+        logging.info("BLE nearby scanner started.")
+
+        assert self.proc.stdout is not None
+        while not self._stop:
+            line = await self.proc.stdout.readline()
+            if not line:
+                break
+            self._handle_line(line.decode("utf-8", errors="ignore"))
+            self._print_snapshot_if_due()
+
+    async def run(self) -> None:
+        while not self._stop:
+            try:
+                await self._run_once()
+            except FileNotFoundError:
+                logging.warning("bluetoothctl not found; nearby BLE scan disabled.")
+                return
+            except Exception as exc:
+                if not self._stop:
+                    logging.warning("BLE nearby scanner error: %s", exc)
+            finally:
+                proc = self.proc
+                self.proc = None
+                if proc is not None:
+                    try:
+                        if proc.stdin is not None:
+                            proc.stdin.write(b"scan off\nquit\n")
+                        if proc.returncode is None:
+                            proc.terminate()
+                        await asyncio.wait_for(proc.wait(), timeout=2)
+                    except Exception:
+                        try:
+                            if proc.returncode is None:
+                                proc.kill()
+                        except Exception:
+                            pass
+            if not self._stop:
+                await asyncio.sleep(2)
+
+    def stop(self) -> None:
+        self._stop = True
+        if self.proc is not None and self.proc.returncode is None:
+            try:
+                if self.proc.stdin is not None:
+                    self.proc.stdin.write(b"scan off\nquit\n")
+                self.proc.terminate()
+            except Exception:
+                pass
+
+
 class DoorAgent:
     def __init__(self, cfg: Config) -> None:
         self.cfg = cfg
@@ -234,6 +401,12 @@ class DoorAgent:
         self.status_char: Any = None
         self.gatt: peripheral.Peripheral | None = None
         self.gatt_task: asyncio.Task[Any] | None = None
+        self.nearby_scan_task: asyncio.Task[Any] | None = None
+        self.nearby_scanner = NearbyBLEScanner(
+            adapter_address=cfg.ble_adapter_address,
+            snapshot_sec=cfg.ble_nearby_snapshot_sec,
+            stale_sec=cfg.ble_nearby_stale_sec,
+        )
 
         self.last_open_ts = 0.0
         self.open_lock = asyncio.Lock()
@@ -838,6 +1011,14 @@ class DoorAgent:
         self.gatt_task.add_done_callback(self._on_gatt_task_done)
         logging.info("BLE service publish task started.")
 
+        if self.cfg.ble_nearby_scan:
+            self.nearby_scan_task = asyncio.create_task(self.nearby_scanner.run())
+            logging.info(
+                "Nearby BLE scan enabled (snapshot=%ss stale=%ss).",
+                self.cfg.ble_nearby_snapshot_sec,
+                self.cfg.ble_nearby_stale_sec,
+            )
+
         asyncio.create_task(self.doorlink_loop())
         logging.info("DoorLink task started.")
 
@@ -845,6 +1026,9 @@ class DoorAgent:
             await asyncio.sleep(1)
 
     def shutdown(self) -> None:
+        self.nearby_scanner.stop()
+        if self.nearby_scan_task is not None:
+            self.nearby_scan_task.cancel()
         self.led.cleanup()
 
 
