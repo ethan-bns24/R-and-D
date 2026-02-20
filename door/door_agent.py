@@ -445,6 +445,7 @@ class DoorAgent:
         self.doorlink_ws: Any = None
         self.pending_events: deque[dict[str, Any]] = deque()
         self.status_char: Any = None
+        self.last_status_payload: bytes = b""
         self.gatt: peripheral.Peripheral | None = None
         self.gatt_task: asyncio.Task[Any] | None = None
         self.gatt_watch_task: asyncio.Task[Any] | None = None
@@ -555,13 +556,34 @@ class DoorAgent:
             logging.info("[GATT] INFO read -> len=%s payload=%s", len(payload), payload.hex())
         return payload
 
+    def status_read(self, *_args: Any, **_kwargs: Any) -> bytes:
+        if self.cfg.ble_gatt_debug_logs:
+            if self.last_status_payload:
+                logging.info(
+                    "[GATT] STATUS read -> len=%s payload=%s",
+                    len(self.last_status_payload),
+                    self.last_status_payload.hex(),
+                )
+            else:
+                logging.info("[GATT] STATUS read -> len=0 payload=<empty>")
+        return self.last_status_payload
+
+    def on_status_notify_changed(self, enabled: bool, _characteristic: Any = None) -> None:
+        logging.info("[GATT] STATUS notifications %s", "ENABLED" if enabled else "DISABLED")
+
     def status_notify(self, payload: bytes) -> None:
         if self.status_char is None:
+            logging.warning("[GATT] STATUS characteristic unavailable; dropping notify payload=%s", payload.hex())
             return
+        self.last_status_payload = payload
         self.status_char.set_value(payload)
-        self.status_char.notify = True
         if self.cfg.ble_gatt_debug_logs:
-            logging.info("[GATT] NOTIFY -> len=%s payload=%s", len(payload), payload.hex())
+            logging.info(
+                "[GATT] NOTIFY -> len=%s payload=%s notifying=%s",
+                len(payload),
+                payload.hex(),
+                getattr(self.status_char, "is_notifying", None),
+            )
 
     def notify_challenge(self, nonce: bytes) -> None:
         payload = self.tlv_pack(
@@ -1160,14 +1182,22 @@ class DoorAgent:
             read_callback=self.info_read,
         )
 
-        self.status_char = door.add_characteristic(
+        door.add_characteristic(
             srv_id=1,
             chr_id=2,
             uuid=CHAR_STATUS,
-            value=b"",
-            notifying=True,
-            flags=["notify"],
+            value=self.status_read(),
+            notifying=False,
+            flags=["read", "notify", "indicate"],
+            read_callback=self.status_read,
+            notify_callback=self.on_status_notify_changed,
         )
+        # bluezero.add_characteristic() does not return the characteristic object.
+        self.status_char = door.characteristics[-1] if door.characteristics else None
+        if self.status_char is None:
+            logging.warning("[GATT] Failed to register STATUS characteristic handle.")
+        else:
+            logging.info("[GATT] STATUS characteristic ready path=%s", self.status_char.get_path())
 
         door.add_characteristic(
             srv_id=1,

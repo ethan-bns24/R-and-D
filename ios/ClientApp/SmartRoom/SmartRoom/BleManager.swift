@@ -53,12 +53,20 @@ final class BleManager: NSObject, ObservableObject, CBCentralManagerDelegate, CB
     private var knownBleNames: Set<String> = []
     private var isConnecting = false
     private var connectedDoorID: UUID?
+    private var statusNotifyReady = false
+    private var pendingGetChallenge = false
+    private var pendingGetChallengeWorkItem: DispatchWorkItem?
+    private var challengeRetryWorkItem: DispatchWorkItem?
+    private var challengeRetryCount = 0
+    private let maxChallengeRetries = 4
     private var scannedByPeripheralID: [UUID: ScannedDevice] = [:]
     private var openTimeoutWorkItem: DispatchWorkItem?
     private var sawCompatibleDuringOpen = false
+    private var sawChallengeDuringOpen = false
+    private let openTimeoutSeconds: TimeInterval = 25
     private var emitterTestCompletion: ((String) -> Void)?
     private var emitterTestWorkItem: DispatchWorkItem?
-    private let emitterTestServiceUUID = CBUUID(string: "C0DE00F0-3F2A-4E9B-9B1E-0A8C2D3A4B5C")
+    private let emitterTestServiceUUID = CBUUID(string: "C0DE0001-3F2A-4E9B-9B1E-0A8C2D3A4B5C")
     private let forcedDoorDeviceName = "DoorAccess-1a7d2ade"
 
     override init() {
@@ -105,7 +113,8 @@ final class BleManager: NSObject, ObservableObject, CBCentralManagerDelegate, CB
         self.completion = completion
         self.challengeNonce = nil
         self.sawCompatibleDuringOpen = false
-        scheduleOpenTimeout()
+        self.sawChallengeDuringOpen = false
+        bumpOpenTimeout()
 
         switch central.state {
         case .poweredOn:
@@ -141,6 +150,7 @@ final class BleManager: NSObject, ObservableObject, CBCentralManagerDelegate, CB
         openTimeoutWorkItem?.cancel()
         openTimeoutWorkItem = nil
         sawCompatibleDuringOpen = false
+        sawChallengeDuringOpen = false
         completion?(result)
         completion = nil
         request = nil
@@ -155,6 +165,7 @@ final class BleManager: NSObject, ObservableObject, CBCentralManagerDelegate, CB
         openTimeoutWorkItem?.cancel()
         openTimeoutWorkItem = nil
         sawCompatibleDuringOpen = false
+        sawChallengeDuringOpen = false
         let result = OpenResult(success: false, errorCode: errorCode, message: message)
         self.completion = nil
         self.request = nil
@@ -162,14 +173,17 @@ final class BleManager: NSObject, ObservableObject, CBCentralManagerDelegate, CB
         completion(result)
     }
 
-    private func scheduleOpenTimeout() {
+    private func bumpOpenTimeout() {
+        guard request != nil else { return }
         openTimeoutWorkItem?.cancel()
 
         let workItem = DispatchWorkItem { [weak self] in
             guard let self else { return }
             guard self.request != nil else { return }
 
-            if self.sawCompatibleDuringOpen {
+            if self.sawChallengeDuringOpen {
+                self.failPending(message: "Challenge BLE recu mais authentification non finalisee")
+            } else if self.sawCompatibleDuringOpen {
                 self.failPending(message: "Porte BLE detectee, mais connexion GATT impossible")
             } else if self.scannedDevices.isEmpty {
                 self.failPending(message: "Aucun device BLE detecte")
@@ -179,7 +193,7 @@ final class BleManager: NSObject, ObservableObject, CBCentralManagerDelegate, CB
         }
 
         openTimeoutWorkItem = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + 12, execute: workItem)
+        DispatchQueue.main.asyncAfter(deadline: .now() + openTimeoutSeconds, execute: workItem)
     }
 
     private func bluetoothUnavailableMessage(for state: CBManagerState) -> String {
@@ -264,13 +278,20 @@ final class BleManager: NSObject, ObservableObject, CBCentralManagerDelegate, CB
         guard let peripheral else { return false }
         guard peripheral.state == .connected else { return false }
         guard connectedDoorID == doorID else { return false }
-        return controlChar != nil
+        return controlChar != nil && statusNotifyReady
     }
 
     private func resetGattState() {
         controlChar = nil
         statusChar = nil
         infoChar = nil
+        statusNotifyReady = false
+        pendingGetChallenge = false
+        pendingGetChallengeWorkItem?.cancel()
+        pendingGetChallengeWorkItem = nil
+        challengeRetryWorkItem?.cancel()
+        challengeRetryWorkItem = nil
+        challengeRetryCount = 0
         protoVersion = 1
     }
 
@@ -408,6 +429,7 @@ final class BleManager: NSObject, ObservableObject, CBCentralManagerDelegate, CB
         guard self.peripheral == nil else { return }
         guard !isConnecting else { return }
         guard shouldConnectToDiscovered(peripheral: peripheral, advertisementData: advertisementData) else { return }
+        bumpOpenTimeout()
         resetGattState()
         self.peripheral = peripheral
         self.connectedDoorID = nil
@@ -418,6 +440,7 @@ final class BleManager: NSObject, ObservableObject, CBCentralManagerDelegate, CB
 
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
         isConnecting = false
+        bumpOpenTimeout()
         peripheral.discoverServices([serviceUUID])
     }
 
@@ -446,6 +469,7 @@ final class BleManager: NSObject, ObservableObject, CBCentralManagerDelegate, CB
             handleConnectionIssue(message: "Services BLE indisponibles")
             return
         }
+        bumpOpenTimeout()
 
         guard let services = peripheral.services, !services.isEmpty else {
             handleConnectionIssue(message: "Aucun service GATT detecte")
@@ -465,6 +489,7 @@ final class BleManager: NSObject, ObservableObject, CBCentralManagerDelegate, CB
             handleConnectionIssue(message: "Caracteristiques BLE indisponibles")
             return
         }
+        bumpOpenTimeout()
 
         service.characteristics?.forEach { ch in
             switch ch.uuid {
@@ -481,7 +506,34 @@ final class BleManager: NSObject, ObservableObject, CBCentralManagerDelegate, CB
         }
 
         peripheral.setNotifyValue(true, for: statusChar)
+        if statusChar.isNotifying {
+            statusNotifyReady = true
+        }
         peripheral.readValue(for: infoChar)
+    }
+
+    func peripheral(_ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic, error: Error?) {
+        guard characteristic.uuid == statusUUID else { return }
+        if error != nil {
+            // Certains stacks BLE ne remontent pas proprement ce callback:
+            // on garde un fallback vers l'envoi GET_CHALLENGE.
+            statusNotifyReady = false
+            if pendingGetChallenge {
+                pendingGetChallenge = false
+                pendingGetChallengeWorkItem?.cancel()
+                pendingGetChallengeWorkItem = nil
+                sendGetChallenge()
+            }
+            return
+        }
+
+        statusNotifyReady = characteristic.isNotifying
+        if statusNotifyReady && pendingGetChallenge {
+            pendingGetChallenge = false
+            pendingGetChallengeWorkItem?.cancel()
+            pendingGetChallengeWorkItem = nil
+            sendGetChallenge()
+        }
     }
 
     func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
@@ -520,11 +572,14 @@ final class BleManager: NSObject, ObservableObject, CBCentralManagerDelegate, CB
         // Pendant une demande d'ouverture, on valide uniquement la porte demandee.
         if let req = request {
             if door != req.doorID {
-                failPending(message: "Porte detectee mais door_id ne correspond pas au grant selectionne")
+                failPending(
+                    message: "Porte detectee (\(door.uuidString.lowercased())) mais grant selectionne pour \(req.doorID.uuidString.lowercased())"
+                )
                 return
             }
 
-            sendGetChallenge()
+            bumpOpenTimeout()
+            requestGetChallenge()
             return
         }
 
@@ -544,6 +599,53 @@ final class BleManager: NSObject, ObservableObject, CBCentralManagerDelegate, CB
 
         let payload = Data([0x01])
         peripheral.writeValue(payload, for: controlChar, type: .withResponse)
+        armChallengeRetry()
+    }
+
+    private func armChallengeRetry() {
+        challengeRetryWorkItem?.cancel()
+        guard request != nil else { return }
+        guard challengeNonce == nil else { return }
+        guard challengeRetryCount < maxChallengeRetries else { return }
+
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            guard self.request != nil else { return }
+            guard self.challengeNonce == nil else { return }
+            guard self.challengeRetryCount < self.maxChallengeRetries else { return }
+
+            self.challengeRetryCount += 1
+            self.sendGetChallenge()
+        }
+
+        challengeRetryWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: workItem)
+    }
+
+    private func requestGetChallenge() {
+        guard let peripheral, let controlChar, let statusChar else {
+            finish(OpenResult(success: false, errorCode: 0x0009, message: "Status ou ControlPoint absent"))
+            return
+        }
+
+        if statusNotifyReady {
+            let payload = Data([0x01])
+            peripheral.writeValue(payload, for: controlChar, type: .withResponse)
+            armChallengeRetry()
+            return
+        }
+
+        pendingGetChallenge = true
+        pendingGetChallengeWorkItem?.cancel()
+        let fallback = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            guard self.pendingGetChallenge else { return }
+            self.pendingGetChallenge = false
+            self.sendGetChallenge()
+        }
+        pendingGetChallengeWorkItem = fallback
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: fallback)
+        peripheral.setNotifyValue(true, for: statusChar)
     }
 
     private func handleStatus(_ data: Data) {
@@ -556,6 +658,11 @@ final class BleManager: NSObject, ObservableObject, CBCentralManagerDelegate, CB
                 finish(OpenResult(success: false, errorCode: 0x0009, message: "Nonce invalide"))
                 return
             }
+            challengeRetryWorkItem?.cancel()
+            challengeRetryWorkItem = nil
+            challengeRetryCount = 0
+            sawChallengeDuringOpen = true
+            bumpOpenTimeout()
             challengeNonce = nonce
             sendAuthenticate()
             return

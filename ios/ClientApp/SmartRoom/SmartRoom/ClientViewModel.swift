@@ -120,9 +120,28 @@ final class ClientViewModel: ObservableObject {
 
     func openSelectedDoor() {
         guard let keyID,
-              let secretBaseB64,
-              let grant = selectedGrant,
-              let door = selectedDoor else {
+              let secretBaseB64 else {
+            statusMessage = "Selection grant/door invalide"
+            return
+        }
+
+        var grantToUse = selectedGrant
+        var doorToUse = selectedDoor
+
+        let resolvedFromScan = resolveGrantFromDetectedDoor()
+
+        if let resolved = resolvedFromScan {
+            grantToUse = resolved.grant
+            doorToUse = resolved.door
+            selectedGrantID = resolved.grant.grant_id
+            selectedDoorID = resolved.door.door_id
+        } else if let detected = scannedDevices.first(where: { $0.isRegistered }) {
+            statusMessage = "Porte detectee (\(detected.name)) mais aucun grant mobile ne correspond a cette porte"
+            return
+        }
+
+        guard let grant = grantToUse,
+              let door = doorToUse else {
             statusMessage = "Selection grant/door invalide"
             return
         }
@@ -142,6 +161,38 @@ final class ClientViewModel: ObservableObject {
                 self.statusMessage = result.message
             }
         }
+    }
+
+    private func normalizeBleID(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    private func resolveGrantFromDetectedDoor() -> (grant: ApiClient.MobileGrant, door: ApiClient.MobileDoor)? {
+        guard let detected = scannedDevices.first(where: { $0.isRegistered }) else { return nil }
+        let detectedName = normalizeBleID(detected.name)
+
+        for grant in grants {
+            if let door = grant.doors.first(where: { normalizeBleID($0.ble_id) == detectedName }) {
+                return (grant, door)
+            }
+        }
+
+        // Fallback: DoorAccess-<8 hex> -> match prefix on door_id without dashes.
+        if detectedName.hasPrefix("dooraccess-") {
+            let suffix = String(detectedName.dropFirst("dooraccess-".count))
+            guard suffix.count == 8 else { return nil }
+
+            for grant in grants {
+                if let door = grant.doors.first(where: {
+                    let compact = $0.door_id.replacingOccurrences(of: "-", with: "").lowercased()
+                    return compact.hasPrefix(suffix)
+                }) {
+                    return (grant, door)
+                }
+            }
+        }
+
+        return nil
     }
 
     func runBleEmitterTest() {
