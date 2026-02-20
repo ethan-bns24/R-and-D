@@ -12,6 +12,7 @@ import os
 import re
 import struct
 import subprocess
+import sys
 import time
 import uuid
 from collections import defaultdict, deque
@@ -97,14 +98,18 @@ class Config:
     ble_require_encryption: bool
     ble_adapter_address: str | None
     ble_nearby_scan: bool
+    ble_nearby_table_refresh_sec: int
     ble_nearby_snapshot_sec: int
     ble_nearby_stale_sec: int
+    ble_gatt_debug_logs: bool
+    ble_gatt_watch_sec: int
 
     doorlink_url: str
     door_api_token: str
     fw_version: str
 
     led_gpio: int
+    led_closed_gpio: int
     open_ms: int
     open_cooldown_sec: float
 
@@ -126,13 +131,17 @@ class Config:
             ble_local_name=ble_name,
             ble_require_encryption=env_bool("BLE_REQUIRE_ENCRYPTION", False),
             ble_adapter_address=os.getenv("BLE_ADAPTER_ADDRESS"),
-            ble_nearby_scan=env_bool("BLE_NEARBY_SCAN", True),
+            ble_nearby_scan=env_bool("BLE_NEARBY_SCAN", False),
+            ble_nearby_table_refresh_sec=env_int("BLE_NEARBY_TABLE_REFRESH_SEC", 1),
             ble_nearby_snapshot_sec=env_int("BLE_NEARBY_SNAPSHOT_SEC", 8),
             ble_nearby_stale_sec=env_int("BLE_NEARBY_STALE_SEC", 30),
+            ble_gatt_debug_logs=env_bool("BLE_GATT_DEBUG_LOGS", True),
+            ble_gatt_watch_sec=env_int("BLE_GATT_WATCH_SEC", 1),
             doorlink_url=os.getenv("DOORLINK_URL", "ws://127.0.0.1:18000/doorlink/ws"),
             door_api_token=os.getenv("DOOR_API_TOKEN", ""),
             fw_version=os.getenv("FW_VERSION", "1.0.0"),
             led_gpio=env_int("LED_GPIO", 17),
+            led_closed_gpio=env_int("LED_CLOSED_GPIO", 27),
             open_ms=env_int("OPEN_MS", 700),
             open_cooldown_sec=float(os.getenv("OPEN_COOLDOWN_SEC", "1.0")),
             nonce_ttl_sec=env_int("NONCE_TTL_SEC", 30),
@@ -162,7 +171,7 @@ class GPIOController:
     def cleanup(self) -> None:
         if self.enabled:
             GPIO.output(self.pin, GPIO.LOW)
-            GPIO.cleanup()
+            GPIO.cleanup(self.pin)
 
 
 @dataclass
@@ -233,16 +242,17 @@ class NearbyBLEScanner:
         self,
         *,
         adapter_address: str | None,
+        table_refresh_sec: int,
         snapshot_sec: int,
         stale_sec: int,
     ) -> None:
         self.adapter_address = adapter_address
+        self.table_refresh_sec = max(1, table_refresh_sec)
         self.snapshot_sec = max(2, snapshot_sec)
         self.stale_sec = max(5, stale_sec)
         self._stop = False
         self.proc: asyncio.subprocess.Process | None = None
         self.devices: dict[str, dict[str, Any]] = {}
-        self._last_snapshot = 0.0
 
     @staticmethod
     def _strip_ansi(line: str) -> str:
@@ -257,7 +267,6 @@ class NearbyBLEScanner:
             item["rssi"] = rssi
         item["last_seen"] = now
         self.devices[mac] = item
-        logging.info("BLE nearby: mac=%s name=%s rssi=%s", mac, item["name"], item["rssi"])
 
     def _handle_line(self, raw_line: str) -> None:
         line = self._strip_ansi(raw_line)
@@ -272,7 +281,6 @@ class NearbyBLEScanner:
             if match_del:
                 mac = match_del.group(1).upper()
                 self.devices.pop(mac, None)
-                logging.info("BLE nearby: device removed mac=%s", mac)
             return
 
         match_rssi = re.search(r"Device\s+([0-9A-Fa-f:]{17})\s+RSSI:\s*(-?\d+)", line)
@@ -299,28 +307,59 @@ class NearbyBLEScanner:
             elif is_new or is_change:
                 self._upsert_device(mac)
 
-    def _print_snapshot_if_due(self) -> None:
+    @staticmethod
+    def _short_name(name: str, width: int) -> str:
+        if len(name) <= width:
+            return name
+        if width <= 3:
+            return name[:width]
+        return name[: width - 3] + "..."
+
+    def _active_devices(self) -> list[dict[str, Any]]:
         now = time.time()
-        if (now - self._last_snapshot) < self.snapshot_sec:
-            return
-        self._last_snapshot = now
 
         active = []
         for item in self.devices.values():
             if (now - float(item["last_seen"])) <= self.stale_sec:
                 active.append(item)
-
         active.sort(key=lambda x: (x["rssi"] is None, -(x["rssi"] or -999)))
-        logging.info("BLE nearby snapshot: %s device(s) seen in last %ss", len(active), self.stale_sec)
-        for item in active:
-            age = int(now - float(item["last_seen"]))
-            logging.info(
-                "  - %s | %s | rssi=%s | seen=%ss",
-                item["mac"],
-                item["name"],
-                item["rssi"],
-                age,
-            )
+        return active
+
+    def _render_table(self) -> None:
+        now = time.time()
+        active = self._active_devices()
+
+        lines = [
+            "############################################################",
+            "#                 BLE DEVICES A PROXIMITE                  #",
+            "############################################################",
+            f"adapter : {self.adapter_address or 'auto'}",
+            f"devices : {len(active)}  (vu <= {self.stale_sec}s)",
+            "",
+            " # | MAC               | RSSI  | AGE | NAME",
+            "---+-------------------+-------+-----+------------------------------",
+        ]
+
+        if not active:
+            lines.append(" - | (aucun)           |   -   |  -  | attente de scan...")
+        else:
+            for idx, item in enumerate(active[:30], start=1):
+                age = int(now - float(item["last_seen"]))
+                rssi = item["rssi"]
+                rssi_txt = f"{rssi}dBm" if rssi is not None else "-"
+                name = self._short_name(str(item["name"]), 30)
+                lines.append(
+                    f"{idx:>2} | {item['mac']:<17} | {rssi_txt:>5} | {age:>3}s | {name:<30}"
+                )
+
+        payload = "\033[2J\033[H" + "\n".join(lines) + "\n"
+        sys.stdout.write(payload)
+        sys.stdout.flush()
+
+    async def _render_loop(self) -> None:
+        while not self._stop:
+            self._render_table()
+            await asyncio.sleep(self.table_refresh_sec)
 
     async def _send_cmd(self, cmd: str) -> None:
         if self.proc is None or self.proc.stdin is None:
@@ -347,9 +386,9 @@ class NearbyBLEScanner:
             if not line:
                 break
             self._handle_line(line.decode("utf-8", errors="ignore"))
-            self._print_snapshot_if_due()
 
     async def run(self) -> None:
+        render_task = asyncio.create_task(self._render_loop())
         while not self._stop:
             try:
                 await self._run_once()
@@ -377,6 +416,11 @@ class NearbyBLEScanner:
                             pass
             if not self._stop:
                 await asyncio.sleep(2)
+        render_task.cancel()
+        try:
+            await render_task
+        except asyncio.CancelledError:
+            pass
 
     def stop(self) -> None:
         self._stop = True
@@ -393,7 +437,11 @@ class DoorAgent:
     def __init__(self, cfg: Config) -> None:
         self.cfg = cfg
         self.state = StateStore(cfg.state_file)
-        self.led = GPIOController(cfg.led_gpio)
+        self.open_led = GPIOController(cfg.led_gpio)
+        self.closed_led = GPIOController(cfg.led_closed_gpio)
+        # Etat par defaut: porte fermee.
+        self.open_led.low()
+        self.closed_led.high()
 
         self.loop = asyncio.get_running_loop()
         self.doorlink_ws: Any = None
@@ -401,9 +449,12 @@ class DoorAgent:
         self.status_char: Any = None
         self.gatt: peripheral.Peripheral | None = None
         self.gatt_task: asyncio.Task[Any] | None = None
+        self.gatt_watch_task: asyncio.Task[Any] | None = None
         self.nearby_scan_task: asyncio.Task[Any] | None = None
+        self.gatt_connected_clients: set[str] = set()
         self.nearby_scanner = NearbyBLEScanner(
             adapter_address=cfg.ble_adapter_address,
+            table_refresh_sec=cfg.ble_nearby_table_refresh_sec,
             snapshot_sec=cfg.ble_nearby_snapshot_sec,
             stale_sec=cfg.ble_nearby_stale_sec,
         )
@@ -476,6 +527,8 @@ class DoorAgent:
         print(f"status          : {CHAR_STATUS} (NOTIFY)")
         print(f"info            : {CHAR_INFO} (READ)")
         print(f"require_encrypt : {self.cfg.ble_require_encryption}")
+        print(f"open_led_gpio   : {self.cfg.led_gpio}")
+        print(f"closed_led_gpio : {self.cfg.led_closed_gpio}")
         print("############################################################")
         print("")
 
@@ -491,7 +544,7 @@ class DoorAgent:
 
     # ---------- GATT Info / Status ----------
     def info_read(self, *_args: Any, **_kwargs: Any) -> bytes:
-        return self.tlv_pack(
+        payload = self.tlv_pack(
             [
                 (TLV_DOOR_ID, self.cfg.door_id.bytes),
                 (TLV_PROTO_VERSION, bytes([self.cfg.proto_version])),
@@ -499,12 +552,17 @@ class DoorAgent:
                 (TLV_DOOR_TIME, self.i64be(int(time.time()))),
             ]
         )
+        if self.cfg.ble_gatt_debug_logs:
+            logging.info("[GATT] INFO read -> len=%s payload=%s", len(payload), payload.hex())
+        return payload
 
     def status_notify(self, payload: bytes) -> None:
         if self.status_char is None:
             return
         self.status_char.set_value(payload)
         self.status_char.notify = True
+        if self.cfg.ble_gatt_debug_logs:
+            logging.info("[GATT] NOTIFY -> len=%s payload=%s", len(payload), payload.hex())
 
     def notify_challenge(self, nonce: bytes) -> None:
         payload = self.tlv_pack(
@@ -513,6 +571,8 @@ class DoorAgent:
                 (TLV_DOOR_TIME, self.i64be(int(time.time()))),
             ]
         )
+        if self.cfg.ble_gatt_debug_logs:
+            logging.info("[GATT] EVT_CHALLENGE nonce=%s", nonce.hex()[:20] + "...")
         self.status_notify(bytes([EVT_CHALLENGE]) + payload)
 
     def notify_result(self, ok: bool, err: int, open_ms: int = 0, event_id: uuid.UUID | None = None) -> None:
@@ -524,6 +584,14 @@ class DoorAgent:
             items.append((TLV_RESULT_OPEN_MS, self.u16be(open_ms)))
         if event_id:
             items.append((TLV_RESULT_EVENT_ID, event_id.bytes))
+        if self.cfg.ble_gatt_debug_logs:
+            logging.info(
+                "[GATT] EVT_RESULT ok=%s err=%s open_ms=%s event_id=%s",
+                ok,
+                err,
+                open_ms,
+                str(event_id) if event_id else "-",
+            )
         self.status_notify(bytes([EVT_RESULT]) + self.tlv_pack(items))
 
     # ---------- Nonce handling ----------
@@ -576,9 +644,15 @@ class DoorAgent:
                 return False
             self.last_open_ts = now
 
-            self.led.high()
-            await asyncio.sleep(self.cfg.open_ms / 1000.0)
-            self.led.low()
+            # Pendant l'ouverture: LED "open" ON, LED "closed" OFF.
+            self.closed_led.low()
+            self.open_led.high()
+            try:
+                await asyncio.sleep(self.cfg.open_ms / 1000.0)
+            finally:
+                # Retour a l'etat ferme.
+                self.open_led.low()
+                self.closed_led.high()
             self.print_open_banner()
             return True
 
@@ -762,26 +836,81 @@ class DoorAgent:
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, 30)
 
+    # ---------- GATT debug watch ----------
+    @staticmethod
+    def _parse_connected_devices(raw: str) -> dict[str, str]:
+        out: dict[str, str] = {}
+        for line in raw.splitlines():
+            match = re.search(r"Device\s+([0-9A-Fa-f:]{17})(?:\s+(.+))?$", line.strip())
+            if not match:
+                continue
+            mac = match.group(1).upper()
+            name = (match.group(2) or "unknown").strip()
+            out[mac] = name if name else "unknown"
+        return out
+
+    async def _list_connected_devices(self) -> dict[str, str]:
+        proc = await asyncio.create_subprocess_exec(
+            "bluetoothctl",
+            "devices",
+            "Connected",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _stderr = await proc.communicate()
+        if proc.returncode != 0:
+            return {}
+        return self._parse_connected_devices(stdout.decode("utf-8", errors="ignore"))
+
+    async def gatt_watch_loop(self) -> None:
+        while True:
+            try:
+                devices = await self._list_connected_devices()
+                current = set(devices.keys())
+                new_clients = sorted(current - self.gatt_connected_clients)
+                left_clients = sorted(self.gatt_connected_clients - current)
+
+                for mac in new_clients:
+                    logging.info("[GATT] client connected mac=%s name=%s", mac, devices.get(mac, "unknown"))
+                for mac in left_clients:
+                    logging.info("[GATT] client disconnected mac=%s", mac)
+
+                if self.cfg.ble_gatt_debug_logs:
+                    clients_dump = ", ".join(f"{mac}({devices.get(mac, 'unknown')})" for mac in sorted(current))
+                    logging.info("[GATT] active clients=%s [%s]", len(current), clients_dump or "-")
+
+                self.gatt_connected_clients = current
+            except FileNotFoundError:
+                logging.warning("[GATT] bluetoothctl not found; connection watch disabled.")
+                return
+            except Exception as exc:
+                logging.warning("[GATT] watch loop error: %s", exc)
+            await asyncio.sleep(max(1, self.cfg.ble_gatt_watch_sec))
+
     # ---------- BLE ControlPoint ----------
     def on_controlpoint_write(self, value: bytes, _options: Any = None) -> None:
         raw = bytes(value)
-        self.loop.call_soon_threadsafe(lambda: asyncio.create_task(self.handle_controlpoint(raw)))
+        if self.cfg.ble_gatt_debug_logs:
+            logging.info("[GATT] ControlPoint write len=%s raw=%s options=%s", len(raw), raw.hex(), _options)
+        self.loop.call_soon_threadsafe(lambda: asyncio.create_task(self.handle_controlpoint(raw, _options)))
 
-    async def handle_controlpoint(self, raw: bytes) -> None:
+    async def handle_controlpoint(self, raw: bytes, options: Any = None) -> None:
         try:
             opcode = raw[0]
             tlv = self.tlv_unpack(raw[1:])
         except Exception:
+            logging.warning("[GATT] invalid ControlPoint payload.")
             self.notify_result(False, ERR_INTERNAL)
             return
 
         if opcode == OP_GET_CHALLENGE:
             nonce = self.new_nonce()
             self.notify_challenge(nonce)
-            logging.info("BLE GET_CHALLENGE -> nonce issued")
+            logging.info("[GATT] GET_CHALLENGE -> nonce issued")
             return
 
         if opcode != OP_AUTHENTICATE:
+            logging.warning("[GATT] unsupported opcode=%s options=%s", opcode, options)
             self.notify_result(False, ERR_INTERNAL)
             return
 
@@ -793,11 +922,23 @@ class DoorAgent:
             if len(nonce) != 32 or len(mac) != 32:
                 raise ValueError("Invalid nonce/mac length")
         except Exception:
+            logging.warning("[GATT] AUTHENTICATE parse error options=%s", options)
             self.notify_result(False, ERR_INTERNAL)
             return
 
+        if self.cfg.ble_gatt_debug_logs:
+            logging.info(
+                "[GATT] AUTHENTICATE key_id=%s grant_id=%s nonce=%s mac=%s options=%s",
+                key_id,
+                str(grant_id) if grant_id else "-",
+                nonce.hex()[:20] + "...",
+                mac.hex()[:20] + "...",
+                options,
+            )
+
         ok_nonce, err_nonce = self.consume_nonce(nonce)
         if not ok_nonce:
+            logging.warning("[GATT] AUTH failed: nonce invalid key_id=%s err=%s", key_id, err_nonce)
             self.notify_result(False, err_nonce)
             await self.emit_access_event(
                 "fail",
@@ -810,6 +951,7 @@ class DoorAgent:
 
         ok_grant, err_grant, grant = self.check_grant_valid(str(key_id))
         if not ok_grant or grant is None:
+            logging.warning("[GATT] AUTH failed: grant invalid key_id=%s err=%s", key_id, err_grant)
             self.notify_result(False, err_grant)
             await self.emit_access_event(
                 "fail",
@@ -821,6 +963,7 @@ class DoorAgent:
             return
 
         if grant_id is not None and grant.grant_id != str(grant_id):
+            logging.warning("[GATT] AUTH failed: grant mismatch key_id=%s expected=%s got=%s", key_id, grant.grant_id, grant_id)
             self.notify_result(False, ERR_GRANT_MISMATCH)
             await self.emit_access_event(
                 "fail",
@@ -834,6 +977,7 @@ class DoorAgent:
         msg = self._msg_for_hmac(nonce, key_id)
         expected = self._hmac_sha256(grant.secret_door, msg)
         if not hmac.compare_digest(mac, expected):
+            logging.warning("[GATT] AUTH failed: HMAC invalid key_id=%s grant_id=%s", key_id, grant.grant_id)
             self.notify_result(False, ERR_HMAC_INVALID)
             await self.emit_access_event(
                 "fail",
@@ -848,6 +992,7 @@ class DoorAgent:
 
         opened = await self.actuate_open()
         if not opened:
+            logging.warning("[GATT] AUTH failed: door busy (cooldown) key_id=%s grant_id=%s", key_id, grant.grant_id)
             self.notify_result(False, ERR_DOOR_BUSY)
             await self.emit_access_event(
                 "fail",
@@ -867,7 +1012,7 @@ class DoorAgent:
             grant_id=uuid.UUID(grant.grant_id),
             meta={"reason": "hmac_ok"},
         )
-        logging.info("AUTHENTICATE success key_id=%s grant_id=%s", key_id, grant.grant_id)
+        logging.info("[GATT] AUTHENTICATE success key_id=%s grant_id=%s", key_id, grant.grant_id)
 
     # ---------- BLE server ----------
     def _characteristic_flags(self, base_flags: list[str]) -> list[str]:
@@ -1011,13 +1156,18 @@ class DoorAgent:
         self.gatt_task.add_done_callback(self._on_gatt_task_done)
         logging.info("BLE service publish task started.")
 
+        self.gatt_watch_task = asyncio.create_task(self.gatt_watch_loop())
+        logging.info("GATT debug watch task started (interval=%ss).", self.cfg.ble_gatt_watch_sec)
+
         if self.cfg.ble_nearby_scan:
             self.nearby_scan_task = asyncio.create_task(self.nearby_scanner.run())
             logging.info(
-                "Nearby BLE scan enabled (snapshot=%ss stale=%ss).",
-                self.cfg.ble_nearby_snapshot_sec,
+                "Nearby BLE table enabled (refresh=%ss stale=%ss).",
+                self.cfg.ble_nearby_table_refresh_sec,
                 self.cfg.ble_nearby_stale_sec,
             )
+        else:
+            logging.info("Nearby BLE table disabled.")
 
         asyncio.create_task(self.doorlink_loop())
         logging.info("DoorLink task started.")
@@ -1027,9 +1177,12 @@ class DoorAgent:
 
     def shutdown(self) -> None:
         self.nearby_scanner.stop()
+        if self.gatt_watch_task is not None:
+            self.gatt_watch_task.cancel()
         if self.nearby_scan_task is not None:
             self.nearby_scan_task.cancel()
-        self.led.cleanup()
+        self.open_led.cleanup()
+        self.closed_led.cleanup()
 
 
 def configure_logging() -> None:
