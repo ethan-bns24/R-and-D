@@ -3,15 +3,35 @@ import Combine
 
 @MainActor
 final class ClientViewModel: ObservableObject {
+    struct DoorRealtimeStatus: Identifiable {
+        let id: String
+        let grantID: String
+        let doorID: String
+        let bleID: String
+        let validFrom: Date
+        let validTo: Date
+        let isDetected: Bool
+        let rssi: Int?
+        let estimatedDistanceMeters: Double?
+        let isCloseEnoughToOpen: Bool
+        let lastSeen: Date?
+    }
+
     @Published var email: String = "guest@example.com"
     @Published var password: String = "guest123"
 
     @Published var statusMessage: String = ""
     @Published var isBusy: Bool = false
+    @Published var isAuthenticated: Bool = false
 
     @Published var grants: [ApiClient.MobileGrant] = []
     @Published var selectedGrantID: String?
     @Published var selectedDoorID: String?
+    @Published var doorRealtimeStatuses: [DoorRealtimeStatus] = []
+    @Published var autoOpenCooldownRemaining: Int = 0
+    @Published var autoOpenArmingRemaining: Int = 0
+    @Published var autoOpenArmingDoorName: String?
+
     @Published var scannedDevices: [BleManager.ScannedDevice] = []
     @Published var isBleScanning: Bool = false
     @Published var bleCentralStateLabel: String = "Initialisation"
@@ -26,11 +46,25 @@ final class ClientViewModel: ObservableObject {
     private var secretBaseB64: String?
     private var cancellables: Set<AnyCancellable> = []
 
+    // Seuils durcis pour eviter les ouvertures a distance.
+    private let autoOpenCooldownSeconds: TimeInterval = 30
+    private let autoOpenArmingSeconds: TimeInterval = 5
+    private let autoOpenMaxDistanceMeters: Double = 0.30
+    private let autoOpenMinRSSI: Int = -50
+    private let autoOpenTxPowerAt1m: Double = -59
+    private let autoOpenPathLossExponent: Double = 2.0
+    private var nextAutoOpenAllowedAt: Date = .distantPast
+    private var autoOpenArmingDeadline: Date?
+    private var autoOpenArmingDeviceID: UUID?
+
     init() {
         bleManager.$scannedDevices
             .receive(on: DispatchQueue.main)
             .sink { [weak self] devices in
-                self?.scannedDevices = devices
+                guard let self else { return }
+                self.scannedDevices = devices
+                self.rebuildDoorRealtimeStatuses(from: devices)
+                self.handleAutoOpen(devices: devices)
             }
             .store(in: &cancellables)
 
@@ -55,10 +89,34 @@ final class ClientViewModel: ObservableObject {
             }
             .store(in: &cancellables)
 
+        Timer.publish(every: 1, on: .main, in: .common)
+            .autoconnect()
+            .sink { [weak self] _ in
+                self?.refreshCooldownRemaining()
+                self?.refreshAutoOpenArmingRemaining()
+            }
+            .store(in: &cancellables)
+
         token = auth.loadToken()
-        if token != nil {
+        isAuthenticated = token != nil
+        if isAuthenticated {
+            statusMessage = "Session restauree"
             Task { await refreshGrants() }
         }
+    }
+
+    var autoOpenRuleLabel: String {
+        let distance = String(format: "%.2f", autoOpenMaxDistanceMeters)
+        return "Auto-ouverture: RSSI >= \(autoOpenMinRSSI) dBm, distance <= \(distance) m, stabilite \(Int(autoOpenArmingSeconds))s"
+    }
+
+    var nearestDetectedDoor: DoorRealtimeStatus? {
+        doorRealtimeStatuses
+            .filter { $0.isDetected }
+            .sorted { lhs, rhs in
+                (lhs.rssi ?? -200) > (rhs.rssi ?? -200)
+            }
+            .first
     }
 
     func login() async {
@@ -68,6 +126,7 @@ final class ClientViewModel: ObservableObject {
             let result = try await api.guestLogin(email: email, password: password)
             token = result.access_token
             auth.saveToken(result.access_token)
+            isAuthenticated = true
             statusMessage = "Connecte"
             await refreshGrants()
         } catch {
@@ -78,11 +137,20 @@ final class ClientViewModel: ObservableObject {
     func logout() {
         auth.clearToken()
         token = nil
-        grants = []
         keyID = nil
         secretBaseB64 = nil
+        isAuthenticated = false
+
+        grants = []
         selectedGrantID = nil
         selectedDoorID = nil
+        doorRealtimeStatuses = []
+        scannedDevices = []
+
+        nextAutoOpenAllowedAt = .distantPast
+        autoOpenCooldownRemaining = 0
+        clearAutoOpenArming()
+
         bleManager.setRegisteredDoors(doorIDs: [], bleIDs: [])
         statusMessage = "Deconnecte"
     }
@@ -98,11 +166,11 @@ final class ClientViewModel: ObservableObject {
 
         do {
             let payload = try await api.fetchMobileGrants(token: token)
-            self.keyID = payload.key_id
-            self.secretBaseB64 = payload.secret_base_b64
-            self.grants = payload.grants
-            self.selectedGrantID = payload.grants.first?.grant_id
-            self.selectedDoorID = payload.grants.first?.doors.first?.door_id
+            keyID = payload.key_id
+            secretBaseB64 = payload.secret_base_b64
+            grants = payload.grants
+            selectedGrantID = payload.grants.first?.grant_id
+            selectedDoorID = payload.grants.first?.doors.first?.door_id
 
             let registeredDoorIDs = payload.grants.flatMap { grant in
                 grant.doors.map(\.door_id)
@@ -112,13 +180,25 @@ final class ClientViewModel: ObservableObject {
             }
             bleManager.setRegisteredDoors(doorIDs: registeredDoorIDs, bleIDs: registeredBleIDs)
 
+            rebuildDoorRealtimeStatuses(from: scannedDevices)
             statusMessage = "\(payload.grants.count) grant(s) charge(s)"
         } catch {
+            if let apiError = error as? ApiClient.ApiError, case .unauthorized = apiError {
+                logout()
+                statusMessage = "Session expiree, reconnectez-vous"
+                return
+            }
             statusMessage = error.localizedDescription
         }
     }
 
     func openSelectedDoor() {
+        openDoor(autoTriggered: false, detectedDevice: nil)
+    }
+
+    private func openDoor(autoTriggered: Bool, detectedDevice: BleManager.ScannedDevice?) {
+        clearAutoOpenArming()
+
         guard let keyID,
               let secretBaseB64 else {
             statusMessage = "Selection grant/door invalide"
@@ -128,14 +208,14 @@ final class ClientViewModel: ObservableObject {
         var grantToUse = selectedGrant
         var doorToUse = selectedDoor
 
-        let resolvedFromScan = resolveGrantFromDetectedDoor()
+        let resolvedFromScan = resolveGrantFromDetectedDoor(detectedDevice)
 
         if let resolved = resolvedFromScan {
             grantToUse = resolved.grant
             doorToUse = resolved.door
             selectedGrantID = resolved.grant.grant_id
             selectedDoorID = resolved.door.door_id
-        } else if let detected = scannedDevices.first(where: { $0.isRegistered }) {
+        } else if let detected = (detectedDevice ?? scannedDevices.first(where: { $0.isRegistered })) {
             statusMessage = "Porte detectee (\(detected.name)) mais aucun grant mobile ne correspond a cette porte"
             return
         }
@@ -147,7 +227,11 @@ final class ClientViewModel: ObservableObject {
         }
 
         isBusy = true
-        statusMessage = "Connexion BLE en cours..."
+        if autoTriggered, let detectedDevice {
+            statusMessage = "Porte proche detectee (\(detectedDevice.name), \(detectedDevice.rssi) dBm). Connexion BLE en cours..."
+        } else {
+            statusMessage = "Connexion BLE en cours..."
+        }
 
         bleManager.openDoor(
             doorID: door.door_id,
@@ -158,7 +242,12 @@ final class ClientViewModel: ObservableObject {
             Task { @MainActor in
                 guard let self else { return }
                 self.isBusy = false
-                self.statusMessage = result.message
+                if autoTriggered {
+                    self.statusMessage = "\(result.message) (cooldown auto 30s)"
+                } else {
+                    self.statusMessage = result.message
+                }
+                self.rebuildDoorRealtimeStatuses(from: self.scannedDevices)
             }
         }
     }
@@ -167,8 +256,14 @@ final class ClientViewModel: ObservableObject {
         value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 
-    private func resolveGrantFromDetectedDoor() -> (grant: ApiClient.MobileGrant, door: ApiClient.MobileDoor)? {
-        guard let detected = scannedDevices.first(where: { $0.isRegistered }) else { return nil }
+    private func fallbackBleIDForDoor(_ doorID: String) -> String? {
+        let compact = doorID.replacingOccurrences(of: "-", with: "").lowercased()
+        guard compact.count >= 8 else { return nil }
+        return "dooraccess-\(compact.prefix(8))"
+    }
+
+    private func resolveGrantFromDetectedDoor(_ detectedDevice: BleManager.ScannedDevice? = nil) -> (grant: ApiClient.MobileGrant, door: ApiClient.MobileDoor)? {
+        guard let detected = (detectedDevice ?? scannedDevices.first(where: { $0.isRegistered })) else { return nil }
         let detectedName = normalizeBleID(detected.name)
 
         for grant in grants {
@@ -177,7 +272,6 @@ final class ClientViewModel: ObservableObject {
             }
         }
 
-        // Fallback: DoorAccess-<8 hex> -> match prefix on door_id without dashes.
         if detectedName.hasPrefix("dooraccess-") {
             let suffix = String(detectedName.dropFirst("dooraccess-".count))
             guard suffix.count == 8 else { return nil }
@@ -193,6 +287,147 @@ final class ClientViewModel: ObservableObject {
         }
 
         return nil
+    }
+
+    private func matchingScannedDevice(for door: ApiClient.MobileDoor, in devices: [BleManager.ScannedDevice]) -> BleManager.ScannedDevice? {
+        let bleID = normalizeBleID(door.ble_id)
+        if let matchByBleID = devices.first(where: { normalizeBleID($0.name) == bleID }) {
+            return matchByBleID
+        }
+
+        guard let fallback = fallbackBleIDForDoor(door.door_id) else { return nil }
+        return devices.first(where: { normalizeBleID($0.name) == fallback })
+    }
+
+    private func rebuildDoorRealtimeStatuses(from devices: [BleManager.ScannedDevice]) {
+        var output: [DoorRealtimeStatus] = []
+
+        for grant in grants {
+            for door in grant.doors {
+                let matched = matchingScannedDevice(for: door, in: devices)
+                let rssi = matched?.rssi
+                let distance = rssi.map { estimatedDistanceMeters(fromRSSI: $0) }
+                let ready = matched.map(isWithinAutoOpenRange) ?? false
+
+                output.append(
+                    DoorRealtimeStatus(
+                        id: "\(grant.grant_id)|\(door.door_id)",
+                        grantID: grant.grant_id,
+                        doorID: door.door_id,
+                        bleID: door.ble_id,
+                        validFrom: Date(timeIntervalSince1970: TimeInterval(grant.from_ts)),
+                        validTo: Date(timeIntervalSince1970: TimeInterval(grant.to_ts)),
+                        isDetected: matched != nil,
+                        rssi: rssi,
+                        estimatedDistanceMeters: distance,
+                        isCloseEnoughToOpen: ready,
+                        lastSeen: matched?.lastSeen
+                    )
+                )
+            }
+        }
+
+        doorRealtimeStatuses = output.sorted { lhs, rhs in
+            if lhs.isCloseEnoughToOpen != rhs.isCloseEnoughToOpen {
+                return lhs.isCloseEnoughToOpen && !rhs.isCloseEnoughToOpen
+            }
+            if lhs.isDetected != rhs.isDetected {
+                return lhs.isDetected && !rhs.isDetected
+            }
+            return (lhs.rssi ?? -200) > (rhs.rssi ?? -200)
+        }
+    }
+
+    private func handleAutoOpen(devices: [BleManager.ScannedDevice]) {
+        refreshCooldownRemaining()
+        refreshAutoOpenArmingRemaining()
+
+        guard isAuthenticated else {
+            clearAutoOpenArming()
+            return
+        }
+        guard keyID != nil, secretBaseB64 != nil else {
+            clearAutoOpenArming()
+            return
+        }
+        guard !isBusy else {
+            clearAutoOpenArming()
+            return
+        }
+        guard autoOpenCooldownRemaining == 0 else {
+            clearAutoOpenArming()
+            return
+        }
+
+        let eligibleDevices = devices
+            .filter { $0.isRegistered }
+            .sorted { $0.rssi > $1.rssi }
+
+        guard let candidate = eligibleDevices.first(where: { isWithinAutoOpenRange($0) && resolveGrantFromDetectedDoor($0) != nil }) else {
+            clearAutoOpenArming()
+            return
+        }
+
+        if autoOpenArmingDeviceID != candidate.id {
+            beginAutoOpenArming(with: candidate)
+            return
+        }
+
+        guard let deadline = autoOpenArmingDeadline else {
+            beginAutoOpenArming(with: candidate)
+            return
+        }
+
+        if Date() < deadline {
+            return
+        }
+
+        clearAutoOpenArming()
+        nextAutoOpenAllowedAt = Date().addingTimeInterval(autoOpenCooldownSeconds)
+        refreshCooldownRemaining()
+        openDoor(autoTriggered: true, detectedDevice: candidate)
+    }
+
+    private func refreshCooldownRemaining() {
+        let remaining = max(0, Int(ceil(nextAutoOpenAllowedAt.timeIntervalSinceNow)))
+        autoOpenCooldownRemaining = remaining
+    }
+
+    private func beginAutoOpenArming(with device: BleManager.ScannedDevice) {
+        autoOpenArmingDeviceID = device.id
+        autoOpenArmingDoorName = device.name
+        autoOpenArmingDeadline = Date().addingTimeInterval(autoOpenArmingSeconds)
+        refreshAutoOpenArmingRemaining()
+        statusMessage = "Conditions reunies pour \(device.name). Verification stabilite 5s..."
+    }
+
+    private func clearAutoOpenArming() {
+        autoOpenArmingDeviceID = nil
+        autoOpenArmingDoorName = nil
+        autoOpenArmingDeadline = nil
+        autoOpenArmingRemaining = 0
+    }
+
+    private func refreshAutoOpenArmingRemaining() {
+        guard let deadline = autoOpenArmingDeadline else {
+            autoOpenArmingRemaining = 0
+            return
+        }
+
+        let remaining = max(0, Int(ceil(deadline.timeIntervalSinceNow)))
+        autoOpenArmingRemaining = remaining
+    }
+
+    private func isWithinAutoOpenRange(_ device: BleManager.ScannedDevice) -> Bool {
+        guard device.rssi != 127 else { return false }
+        guard device.rssi >= autoOpenMinRSSI else { return false }
+        let estimatedDistance = estimatedDistanceMeters(fromRSSI: device.rssi)
+        return estimatedDistance <= autoOpenMaxDistanceMeters
+    }
+
+    private func estimatedDistanceMeters(fromRSSI rssi: Int) -> Double {
+        let exponent = (autoOpenTxPowerAt1m - Double(rssi)) / (10 * autoOpenPathLossExponent)
+        return pow(10, exponent)
     }
 
     func runBleEmitterTest() {
