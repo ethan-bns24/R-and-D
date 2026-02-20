@@ -23,11 +23,7 @@ from typing import Any
 import websockets
 from bluezero import adapter, peripheral
 
-try:
-    import RPi.GPIO as GPIO  # type: ignore
-except Exception:
-    GPIO = None
-
+import RPi.GPIO as GPIO
 
 UUID_NIL = "00000000-0000-0000-0000-000000000000"
 DEFAULT_DOOR_ID = "1a7d2ade-c63e-40f3-ace2-7798e752ee45"
